@@ -72,40 +72,30 @@ not `devclaw test`.
 
 ### Disk image provisioning (required for ACA Sandbox — the default)
 
-**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). The template defaults to Sandbox mode, which requires you to provide a custom Node.js disk image with auth-proxy installed.
+**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). The template defaults to Sandbox mode, which requires a custom Node.js disk image with auth-proxy installed.
 
-**Three paths forward:**
+**Decision: Option B (Automated disk image builder) — APPROVED**
 
-| Option | Effort | Timeline | Recommendation |
-|--------|--------|----------|-----------------|
-| **Option A: Document required steps (current)** | Low | Now | Recommended while building disk automation. Users provision their own Node.js image, snap it, and register with ACA Sandbox. |
-| **Option B: Bake and snap Node.js disk image** | Medium | Near future | Add a `build-disk-image.sh` script to the repo; CI snaps it automatically; Bicep references the snap. |
-| **Option C: Bootstrap via `aca sandbox exec` post-boot** | Medium | Near future | After a plain Linux boot, use `aca sandbox exec` to install Node.js and start auth-proxy dynamically. |
+The team has chosen **Option B: Automated disk image builder** (Decision D-025, approved by Ripley). See [`SANDBOX_RUNTIME_STRATEGY.md`](./SANDBOX_RUNTIME_STRATEGY.md) for full rationale.
 
-**Recommended: Option A (document required steps)**
+**Option B roadmap:**
 
-Until we bake disk images automatically, users should:
+| Phase | Duration | Status | Owner | Deliverables |
+|-------|----------|--------|-------|--------------|
+| **1 – MVP** | 1–2 weeks | Backlog | TBD (Bishop/Hicks candidate) | `build-disk-image.sh`/`.ps1`, devclaw sandbox init/upload (manual) |
+| **2 – Auto-build** | 2–4 weeks | Backlog | TBD | Automated rebuild on deps; ACA integration |
+| **3 – CI/CD** | 4–8 weeks | Backlog | TBD | GitHub Actions, artifact signing, multi-region distribution |
 
-1. **Build or obtain a Node.js disk image** (24 GB, minimal Linux + Node.js 20+ + npm + auth-proxy)
-2. **Snap the image** in your target region (e.g., `az snapshot create ...`)
-3. **Create a sandbox group and register the disk** using `aca` CLI:
+**Blocker:** ACA Sandbox API must reach stable GA (not preview) before Phase 2 rollout.
 
-```bash
-aca -s <subscription> -g <resource-group> sandboxgroup create --name sg-<env> --location <region> --set-config
-aca sandboxgroup identity assign --group sg-<env> --system-assigned
-aca sandbox create --group sg-<env> --disk node-24 --label app=openclaw --label env=<env>
-aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --email <user@tenant>
-aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
-```
-
-**Don't have a custom disk yet?** Revert to standard Container Apps:
+**For now (Phase 1 in progress):** Users without a pre-built disk can use standard Container Apps:
 
 ```bash
 azd env set ACA_SANDBOX_MODE standard
 ./devclaw up
 ```
 
-This deploys to standard Container Apps (stateful, Easy Auth + Teams support) instead of Sandbox.
+This deploys to standard Container Apps (stateful, Easy Auth + Teams support) instead of Sandbox while Phase 1 disk image automation is being built.
 
 ---
 
