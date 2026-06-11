@@ -92,6 +92,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      HAS_AZURE_BLOB_PUBLISH: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != '' }}
 
     steps:
       - name: Check out repository
@@ -182,7 +184,7 @@ jobs:
           path: ./dist/${{ matrix.region }}
 
       - name: Azure login
-        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != '' }}
+        if: env.HAS_AZURE_BLOB_PUBLISH == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -190,7 +192,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Publish region bundle to Azure Blob
-        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != '' }}
+        if: env.HAS_AZURE_BLOB_PUBLISH == 'true'
         uses: azure/cli@v2
         with:
           inlineScript: |

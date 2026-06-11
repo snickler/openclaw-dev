@@ -13,6 +13,8 @@ jobs:
     # Only trigger on squad:{member} labels (not the base "squad" label)
     if: startsWith(github.event.label.name, 'squad:')
     runs-on: ubuntu-latest
+    env:
+      HAS_COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -115,7 +117,7 @@ jobs:
 
       # Separate step: assign @copilot using PAT (required for coding agent)
       - name: Assign @copilot coding agent
-        if: github.event.label.name == 'squad:copilot' && secrets.COPILOT_ASSIGN_TOKEN != ''
+        if: github.event.label.name == 'squad:copilot' && env.HAS_COPILOT_ASSIGN_TOKEN == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
@@ -161,7 +163,7 @@ jobs:
             }
 
       - name: Handle missing COPILOT_ASSIGN_TOKEN
-        if: github.event.label.name == 'squad:copilot' && secrets.COPILOT_ASSIGN_TOKEN == ''
+        if: github.event.label.name == 'squad:copilot' && env.HAS_COPILOT_ASSIGN_TOKEN != 'true'
         uses: actions/github-script@v7
         with:
           script: |
