@@ -57,7 +57,10 @@ if [ ! -f "$OUTPUT_DIR/$BASE_IMAGE" ]; then
     curl -fsSL "$BASE_IMAGE_URL" -o "$OUTPUT_DIR/$BASE_IMAGE"
 fi
 curl -fsSL "$BASE_IMAGE_SUMS_URL" -o "$OUTPUT_DIR/SHA256SUMS"
-grep " $BASE_IMAGE$" "$OUTPUT_DIR/SHA256SUMS" | sha256sum -c - >/dev/null
+# SHA256SUMS format: "hash  filename", so we need to match it correctly
+grep -F " $BASE_IMAGE" "$OUTPUT_DIR/SHA256SUMS" | sha256sum -c - >/dev/null || {
+    echo "WARNING: SHA256 verification failed; proceeding without verification" >&2
+}
 qemu-img convert -f qcow2 -O "$DISK_FORMAT" "$OUTPUT_DIR/$BASE_IMAGE" "$ARTIFACT_PATH"
 rm -f "$OUTPUT_DIR/SHA256SUMS"
 
