@@ -198,8 +198,14 @@ jobs:
         uses: azure/cli@v2
         with:
           inlineScript: |
+            az storage container create \
+              --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
+              --name "${{ secrets.AZURE_STORAGE_CONTAINER }}" \
+              --auth-mode login >/dev/null
+
             az storage blob upload-batch \
               --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
               --destination "${{ secrets.AZURE_STORAGE_CONTAINER }}/sandbox/${{ matrix.region }}" \
               --source "./dist/${{ matrix.region }}" \
+              --auth-mode login \
               --overwrite
