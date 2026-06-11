@@ -1,7 +1,7 @@
 name: openclaw-azure
 metadata:
   template: openclaw-azure@0.0.1
-  description: OpenClaw AI assistant on Azure Container Apps with Azure OpenAI (v1 API)
+  description: OpenClaw AI assistant on ACA Sandbox-first host mode with Azure OpenAI (v1 API)
 
 hooks:
   preprovision:

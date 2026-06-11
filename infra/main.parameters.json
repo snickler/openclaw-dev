@@ -23,6 +23,9 @@
     "containerImage": {
       "value": "${SERVICE_OPENCLAW_IMAGE_NAME}"
     },
+    "acaSandboxMode": {
+      "value": "${ACA_SANDBOX_MODE=standard}"
+    },
     "useExpressEnv": {
       "value": "${USE_EXPRESS_ENV=false}"
     },
@@ -31,6 +34,18 @@
     },
     "openaiLocation": {
       "value": "${AZURE_OPENAI_LOCATION=}"
+    },
+    "squadName": {
+      "value": "${SQUAD_NAME=core}"
+    },
+    "squadInstance": {
+      "value": "${SQUAD_INSTANCE=1}"
+    },
+    "openclawMinReplicas": {
+      "value": "${OPENCLAW_MIN_REPLICAS=1}"
+    },
+    "openclawMaxReplicas": {
+      "value": "${OPENCLAW_MAX_REPLICAS=3}"
     }
   }
 }

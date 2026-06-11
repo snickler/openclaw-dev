@@ -38,10 +38,29 @@ param containerImage string = ''
 @description('When true, skip the storage account + Azure Files volume mount. Use on subscriptions where Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Set SKIP_STORAGE=true in your azd env. Trade-off: gateway token + sessions do not persist across replica restarts.')
 param skipStorage bool = false
 
+@description('Logical squad name for this deployment.')
+param squadName string = 'core'
+
+@description('Numeric squad instance identifier.')
+param squadInstance int = 1
+
+@description('Minimum runtime replicas for the OpenClaw container app.')
+param minReplicas int = 1
+
+@description('Maximum runtime replicas for the OpenClaw container app.')
+param maxReplicas int = 3
+
 // Teams integration is opt-in. The preprovision hook only creates the Bot
 // app registration when `azd env set ENABLE_TEAMS true` is set, so an empty
 // botAppId is the canonical "Teams disabled" signal.
 var teamsEnabled = !empty(botAppId)
+var normalizedSquadName = toLower(replace(replace(replace(trim(squadName), '_', '-'), ' ', '-'), '.', '-'))
+var effectiveSquadName = empty(normalizedSquadName) ? 'core' : normalizedSquadName
+var effectiveSquadInstance = max(1, squadInstance)
+var squadKey = '${effectiveSquadName}-${effectiveSquadInstance}'
+var effectiveMinReplicas = max(0, minReplicas)
+var effectiveMaxReplicas = max(effectiveMinReplicas, maxReplicas)
+var stateShareName = take('openclaw-${effectiveSquadName}-${effectiveSquadInstance}-state', 63)
 
 // Storage is mounted via Azure Files when both standard env mode and the
 // shared-key-allowed storage account are in play. Express mode and the
@@ -77,6 +96,18 @@ var baseEnv = [
     name: 'AZURE_OPENAI_AUTH'
     value: 'managed-identity'
   }
+  {
+    name: 'OPENCLAW_SQUAD_NAME'
+    value: effectiveSquadName
+  }
+  {
+    name: 'OPENCLAW_SQUAD_INSTANCE'
+    value: string(effectiveSquadInstance)
+  }
+  {
+    name: 'OPENCLAW_SQUAD_KEY'
+    value: squadKey
+  }
 ]
 var teamsEnv = teamsEnabled ? [
   {
@@ -104,7 +135,11 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   location: location
   sku: { name: 'Basic' }
   properties: { adminUserEnabled: false }
-  tags: { 'azd-env-name': environmentName }
+  tags: {
+    'azd-env-name': environmentName
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
+  }
 }
 
 // User-assigned MI for ACR pull — created before the container app so the
@@ -137,7 +172,11 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = if (sto
   location: location
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
-  tags: { 'azd-env-name': environmentName }
+  tags: {
+    'azd-env-name': environmentName
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
+  }
   properties: {
     allowSharedKeyAccess: true
     minimumTlsVersion: 'TLS1_2'
@@ -151,7 +190,7 @@ resource fileServices 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01
 
 resource fileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = if (storageEnabled) {
   parent: fileServices
-  name: 'openclaw-state'
+  name: stateShareName
   properties: { shareQuota: 5 }
 }
 
@@ -165,7 +204,11 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
     sku: { name: 'PerGB2018' }
     retentionInDays: 30
   }
-  tags: { 'azd-env-name': environmentName }
+  tags: {
+    'azd-env-name': environmentName
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +220,11 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 resource environment 'Microsoft.App/managedEnvironments@2026-03-02-preview' = {
   name: 'env-${resourceToken}'
   location: location
-  tags: { 'azd-env-name': environmentName }
+  tags: {
+    'azd-env-name': environmentName
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
+  }
   properties: useExpressEnv ? {
     environmentMode: 'Express'
   } : {
@@ -237,6 +284,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: {
     'azd-env-name': environmentName
     'azd-service-name': 'openclaw'
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
   }
   properties: {
     managedEnvironmentId: environment.id
@@ -308,8 +357,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         // On first provision (no real image yet), scale to 0 so no replica
         // starts and no image pull is attempted. azd deploy pushes the real
         // image, then postdeploy scales up to 1.
-        minReplicas: isPlaceholder ? 0 : 1
-        maxReplicas: 1
+        minReplicas: isPlaceholder ? 0 : effectiveMinReplicas
+        maxReplicas: isPlaceholder ? 1 : effectiveMaxReplicas
       }
     }
   }
@@ -392,7 +441,11 @@ resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId
   location: 'global'
   kind: 'azurebot'
   sku: { name: 'F0' }
-  tags: { 'azd-env-name': environmentName }
+  tags: {
+    'azd-env-name': environmentName
+    'openclaw-squad-name': effectiveSquadName
+    'openclaw-squad-instance': string(effectiveSquadInstance)
+  }
   properties: {
     displayName: 'OpenClaw'
     description: 'OpenClaw AI assistant on Azure'
@@ -416,3 +469,4 @@ resource teamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = i
 }
 
 output BOT_APP_ID string = botAppId
+output SQUAD_KEY string = squadKey

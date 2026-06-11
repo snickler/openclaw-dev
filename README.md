@@ -13,7 +13,7 @@ description: Deploy OpenClaw with Azure OpenAI using one CLI command. Chat in th
 -->
 # 🦞 openclaw-dev on Azure
 
-A small dev tool that deploys [OpenClaw](https://github.com/openclaw/openclaw) to an ephemeral cloud sandbox you can chat with from the browser — always on, isolated from your laptop, reachable from any device. Uses Azure OpenAI in Foundry Models for the backend (default `gpt-5-mini`). Microsoft Teams is an optional add-on.
+A small dev tool that deploys [OpenClaw](https://github.com/openclaw/openclaw) to an ephemeral cloud sandbox you can chat with from the browser — always on, isolated from your laptop, reachable from any device. Uses Azure OpenAI in Foundry Models for the backend (default `gpt-5-mini`). Runs on **Azure Container Apps** by default; optionally can explore **Express mode** for faster cold-start or **ACA Sandbox** (manual disk provisioning). Microsoft Teams is an optional add-on.
 
 > **Just want OpenClaw on your Windows machine?** Use [Microsoft Execution Containers (MXC)](https://github.com/microsoft/mxc) — a policy-driven runtime that contains the OpenClaw node + gateway on Windows, [announced at Build 2026](https://blogs.windows.com/windowsdeveloper/2026/06/02/build-2026-furthering-windows-as-the-trusted-platform-for-development/). This repo is for the **cloud** path: when you want an always-on, multi-device, throwaway sandbox instead.
 
@@ -51,7 +51,40 @@ cd openclaw-dev
 .\devclaw.cmd up
 ```
 
-On first run, `azd` prompts for a subscription, region, and environment name (a new resource group `rg-<env-name>` is created automatically). First deploy takes ~6 minutes (provision ~2 min + remote build & deploy ~3.5 min). Subsequent `devclaw deploy` runs take ~3-4 minutes for a remote build, or ~30s if only the entrypoint changed.
+`devclaw up` provisions the baseline Azure resources on standard Azure Container Apps. For **Express mode** (faster cold-start), use `azd env set USE_EXPRESS_ENV true` before `devclaw up`. For **ACA Sandbox** host exploration,
+see the explicit ACA Sandbox flow in the skill playbook (`skills/openclaw-on-azure/SKILL.md`).
+
+### ACA Sandbox replacement flow (opt-in, separate from template)
+
+⚠️ **Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template packages OpenClaw as a full Node.js + npm + auth proxy OCI image, which cannot run directly on bare sandbox OS disks.
+
+When you have a **custom disk image** or want to explore sandbox isolation separately:
+
+```bash
+aca -s <sub> -g <rg> sandboxgroup create --name sg-<env> --location <region> --set-config
+aca sandboxgroup identity assign --group sg-<env> --system-assigned
+aca sandbox create --group sg-<env> --disk node-24 --label app=openclaw --label env=<env>
+aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --email <you@tenant>
+aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
+```
+
+### Multi-squad orchestration
+
+Use `devclaw squad` helpers to manage independent `azd` environments per squad:
+
+```bash
+devclaw squad init alpha eastus2 eastus2  # creates/selects squad-alpha + sets locations
+devclaw squad use alpha                    # switches active env (accepts alpha or squad-alpha)
+devclaw squad select alpha                 # alias of `use`
+devclaw squad current                      # prints the active environment
+devclaw squad list                         # lists all environments
+devclaw squad status alpha                 # run status against alpha without changing context
+devclaw squad deploy alpha                 # deploy only alpha (same for up/start/stop/logs/down/teams)
+```
+
+Each squad environment maps to its own `rg-<env-name>` deployment, so squads can
+deploy, scale, stop, and restart independently. Squad-scoped wrappers temporarily
+select the target env, run the command, then restore your prior env selection.
 
 ### Verify
 
@@ -136,6 +169,28 @@ off by default. Other policies handled automatically: ACR admin is disabled
 out of the box (the container app pulls images via its system-assigned
 managed identity).
 
+## Multi-squad scaled deployments
+
+You can run multiple isolated OpenClaw squads by using separate azd environments
+and setting squad/scaling env vars before `devclaw up`:
+
+```bash
+azd env set SQUAD_NAME alpha
+azd env set SQUAD_INSTANCE 1
+azd env set OPENCLAW_MIN_REPLICAS 1
+azd env set OPENCLAW_MAX_REPLICAS 3
+devclaw up
+```
+
+Isolation model:
+- Resource names are derived from env + squad inputs (no collisions across squads)
+- ACA/ACR/Storage/Log Analytics/Bot resources are tagged with squad identity
+- Azure Files share is squad-specific (`openclaw-<squad>-<instance>-state`)
+- Runtime receives `OPENCLAW_SQUAD_NAME`, `OPENCLAW_SQUAD_INSTANCE`, and `OPENCLAW_SQUAD_KEY`
+
+`devclaw start` restores configured `OPENCLAW_MIN_REPLICAS`/`OPENCLAW_MAX_REPLICAS`
+instead of forcing `1/1`, so scaled squads resume at intended capacity.
+
 <details>
 <summary>How the Teams integration works (deep dive)</summary>
 
@@ -219,11 +274,12 @@ devclaw up         Deploy OpenClaw to Azure (provision + build + deploy)
 devclaw test       Print a hint to run the in-container smoke test
 devclaw status     Show container status, FQDN, RG
 devclaw logs       Stream live container logs
-devclaw start      Scale to 1 replica (resume after stop)
+devclaw start      Scale to configured min/max replicas (resume after stop)
 devclaw stop       Scale to 0 replicas ($0, state preserved)
 devclaw restart    Restart the active revision
 devclaw deploy     Rebuild and deploy after code changes
 devclaw teams      Set up Microsoft Teams integration (build sideload zip)
+devclaw squad ...  Manage squads + run explicit scoped ops (init/use/select/list/current + up|deploy|status|logs|start|stop|restart|teams|down <squad>)
 devclaw down       Delete ALL Azure resources and Entra app regs (nuke & pave)
 devclaw login      Switch Azure account
 ```
@@ -244,14 +300,15 @@ Skills are sandboxed inside the container. Only install ones you trust (see [Sec
 
 ### Defense in depth
 
-This template applies **four independent layers** of defense, each guarding something different:
+This template applies **five independent layers** of defense, each guarding something different:
 
 | Layer | What it does |
 |---|---|
 | **1. Entra ID Easy Auth** | Microsoft login required before any request reaches the container. Deployed automatically by `devclaw up`. Unauthenticated requests get a 401. Scoped to your tenant. |
 | **2. Gateway token** | A random per-container token is injected into the SPA at startup. Even an authenticated user cannot call the WebSocket API without it. |
 | **3. Managed Identity (no model API keys)** | The container authenticates to the model endpoint via short-lived Entra ID tokens. `disableLocalAuth: true` means model API keys don't even exist. |
-| **4. Ephemeral container** | State is on Azure Files; the container itself is disposable. `devclaw down && devclaw up` = clean slate in 6 minutes. |
+| **4. AOAI content filters (blocking by default)** | The deployed Azure OpenAI RAI policy keeps `Jailbreak` and `Indirect Attack` input detections in blocking mode and keeps standard harm filters enabled for prompt/completion flows. |
+| **5. Ephemeral container** | State is on Azure Files; the container itself is disposable. `devclaw down && devclaw up` = clean slate in 6 minutes. |
 
 ### What to be aware of
 
@@ -330,12 +387,12 @@ All dependencies are pinned at container build time (see [src/Dockerfile](src/Do
 
 | SDK | Version | Role | Notes |
 |---|---|---|---|
-| **`openclaw`** | `@latest` (≥ 2026.5.26) | The gateway runtime itself. Installed globally via `npm install -g openclaw@latest` | Refreshed on every `devclaw deploy` (no version pin = always latest at build time) |
+| **`openclaw`** | `2026.5.26` | The gateway runtime itself. Installed globally via `npm install -g openclaw@2026.5.26` | Pinned in `src/Dockerfile` for deterministic builds |
 | **`@openclaw/msteams`** | `2026.5.26` | External OpenClaw plugin that owns the Teams channel: validates Bot Framework JWTs, parses activities, sends replies | Installed via `openclaw plugins install npm:@openclaw/msteams`. Bundles its own copies of the Teams SDKs below |
 | **`@microsoft/teams.api`** | `2.0.11` (plugin-bundled) / `2.0.6` (Docker-side compat) | Microsoft's current Teams SDK. REST client for the Bot Connector and Graph surfaces. Successor to the `botbuilder` line | v2.0 line went GA in late 2024; **roughly 12–18 months old** (mid-2024 to May 2026) |
 | **`@microsoft/teams.apps`** | `2.0.11` (plugin-bundled) / `2.0.6` (Docker-side compat) | High-level Teams app/agent framework. Message routing, conversation state, adapters. Built on top of `teams.api` | Same generation as `teams.api`; **roughly 12–18 months old** |
-| **`@azure/identity`** | `4.13.1` (plugin-bundled) / latest (auth-proxy) | Used by the auth-proxy and the msteams plugin for `DefaultAzureCredential` and `getBearerTokenProvider`. Fetches, caches, and refreshes Entra ID tokens for AOAI and Bot Framework | The 4.x line has been the active major since early 2024 |
-| **`http-proxy`** | latest (auth-proxy install) | Powers [src/gateway-proxy.mjs](src/gateway-proxy.mjs). Splits ingress by URL path | Long-lived, stable library |
+| **`@azure/identity`** | `4.13.1` (plugin-bundled + auth-proxy) | Used by the auth-proxy and the msteams plugin for `DefaultAzureCredential` and `getBearerTokenProvider`. Fetches, caches, and refreshes Entra ID tokens for AOAI and Bot Framework | Pinned in `src/Dockerfile` |
+| **`http-proxy`** | `1.18.1` (auth-proxy install) | Powers [src/gateway-proxy.mjs](src/gateway-proxy.mjs). Splits ingress by URL path | Pinned in `src/Dockerfile` |
 
 **How AOAI/Foundry is accessed**: OpenClaw speaks the **OpenAI-compatible REST API** under `/openai/v1/...` directly (see [src/openclaw.json](src/openclaw.json) for the configured adapter). It does not depend on the official `openai` npm SDK or the older `@azure/openai` SDK. Requests flow `gateway → auth-proxy → AOAI/Foundry`; the auth-proxy attaches the MI bearer token at the wire level, so AOAI's `disableLocalAuth: true` works without API keys anywhere in the system. The auth-proxy is path-agnostic (it forwards `req.url` as-is), so the same proxy works for any OpenAI-compatible surface (chat, embeddings, audio, images).
 

@@ -1,4 +1,9 @@
-FROM node:24-slim
+FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf
+
+ARG OPENCLAW_VERSION=2026.5.26
+ARG OPENCLAW_MSTEAMS_VERSION=2026.5.26
+ARG AZURE_IDENTITY_VERSION=4.13.1
+ARG HTTP_PROXY_VERSION=1.18.1
 
 # OpenClaw's postinstall installs bundled channel runtime deps via npm.
 # Some transitive deps reference git+ssh URLs (e.g. whiskeysockets/libsignal-node).
@@ -10,15 +15,15 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
-    npm install -g openclaw@latest
+    npm install -g openclaw@${OPENCLAW_VERSION}
 
 # Install critical bundled plugin runtime deps that postinstall misses
 RUN cd /usr/local/lib/node_modules/openclaw && \
     npm install --omit=dev --no-save --package-lock=false \
       @microsoft/teams.api@2.0.6 @microsoft/teams.apps@2.0.6 \
-      @buape/carbon@0.14.0 @larksuiteoapi/node-sdk@^1.60.0 \
-      @slack/bolt@^4.6.0 grammy@^1.0.0 @grammyjs/runner@^2.0.3 \
-      express@^5.2.1 2>/dev/null || true
+      @buape/carbon@0.14.0 @larksuiteoapi/node-sdk@1.60.0 \
+      @slack/bolt@4.6.0 grammy@1.0.0 @grammyjs/runner@2.0.3 \
+      express@5.2.1 2>/dev/null || true
 
 # Create directories for config and state
 RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
@@ -29,10 +34,10 @@ RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
 # when channels.msteams.enabled=true in openclaw.json.
 # The openclaw CLI registers the plugin in /root/.openclaw/npm/node_modules
 # and writes an install record so the gateway loads it at boot.
-RUN openclaw plugins install npm:@openclaw/msteams || \
+RUN openclaw plugins install npm:@openclaw/msteams@${OPENCLAW_MSTEAMS_VERSION} || \
     ( mkdir -p /root/.openclaw/npm && cd /root/.openclaw/npm && \
       npm init -y >/dev/null && \
-      npm install --omit=dev --no-save --package-lock=false @openclaw/msteams )
+      npm install --omit=dev --no-save --package-lock=false @openclaw/msteams@${OPENCLAW_MSTEAMS_VERSION} )
 
 # Install @azure/identity (for auth-proxy.mjs) and http-proxy (for gateway-proxy.mjs).
 # gateway-proxy.mjs is a tiny reverse proxy that routes /api/messages (Bot
@@ -41,7 +46,7 @@ RUN openclaw plugins install npm:@openclaw/msteams || \
 # binds its own Express server on a separate port — without the proxy, ACA's
 # single public ingress on :18789 only reaches the gateway and the bot 404s.
 WORKDIR /opt/openclaw-auth
-RUN npm init -y && npm install @azure/identity http-proxy
+RUN npm init -y && npm install @azure/identity@${AZURE_IDENTITY_VERSION} http-proxy@${HTTP_PROXY_VERSION}
 WORKDIR /
 
 # Copy pre-configured openclaw.json (points agent to Azure OpenAI via env vars)

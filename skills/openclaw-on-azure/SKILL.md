@@ -2,7 +2,7 @@
 name: openclaw-on-azure
 description: >-
   Deploy, operate, and troubleshoot a secure, hosted OpenClaw AI assistant on
-  Azure (Azure Container Apps + Azure OpenAI in Foundry Models, passwordless via
+  Azure (standard Azure Container Apps with optional Express mode for fast cold-start, plus Azure OpenAI in Foundry Models, passwordless via
   Managed Identity, Entra ID Easy Auth, optional Microsoft Teams channel) using
   the repo's `devclaw` wrapper around the Azure Developer CLI (azd). USE FOR:
   deploy OpenClaw to Azure, "devclaw up" / "azd up" failing, set the model or
@@ -18,7 +18,7 @@ license: MIT
 
 This skill lets an AI assistant set up, run, and fix the **openclaw-dev** template
 in plain English. It deploys [OpenClaw](https://github.com/openclaw/openclaw) as a
-secure, always-on AI assistant on **Azure Container Apps**, wired to **Azure OpenAI
+secure, always-on AI assistant on **Azure Container Apps (default) or ACA Sandbox (opt-in replacement)**, wired to **Azure OpenAI
 in Foundry Models** over a **Managed Identity** (no API keys), gated by **Entra ID
 Easy Auth**, and optionally reachable from **Microsoft Teams** on the user's phone.
 
@@ -59,15 +59,44 @@ If `devclaw`/`devclaw.cmd` is not executable, call `azd` directly (`azd up`, `az
 | `status` | Container state, FQDN, URL, resource group | `az containerapp ...` |
 | `logs` | Stream live container logs | `az containerapp logs show --follow` |
 | `test` | Print container/auth/identity summary + console hint (NOT an e2e model test) | `az containerapp show` |
-| `start` | Scale to 1 replica (resume after stop) | `az containerapp update --min/max-replicas 1` |
+| `start` | Scale to configured runtime min/max replicas (resume after stop) | `az containerapp update --min/max-replicas <env values>` |
 | `stop` | Scale to 0 replicas — **$0**, state preserved on Azure Files | `az containerapp update --min/max-replicas 0` |
 | `restart` | Restart the active revision | `az containerapp revision restart` |
 | `teams` | **Opt-in.** Enables Teams (re-provisions + redeploys on first run) and builds the sideload zip | `azd provision` + `azd deploy` + `az bot msteams ...` + zip |
+| `squad` | Manage multi-squad orchestration (`init`, `use`, `list`, `current`) | `azd env new/select/list` + `azd env set` |
 | `login` | Switch Azure account | `az login` + `azd auth login` |
 | `down` | **DESTRUCTIVE** — delete all resources + Entra app regs | `azd down --purge` + `az ad app delete` |
 
 The fastest real smoke test is the **WebChat UI** (open the URL from `devclaw status`),
 not `devclaw test`.
+
+### ACA Sandbox replacement flow (opt-in, separate from template)
+
+**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template's OpenClaw runtime is packaged as a full Node.js + npm + auth proxy OCI image, which cannot run directly on bare sandbox OS disks. 
+
+When the user has a **custom disk image** or wants to explore sandbox isolation separately, run:
+
+```bash
+aca -s <subscription> -g <resource-group> sandboxgroup create --name sg-<env> --location <region> --set-config
+aca sandboxgroup identity assign --group sg-<env> --system-assigned
+aca sandbox create --group sg-<env> --disk node-24 --label app=openclaw --label env=<env>
+aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --email <user@tenant>
+aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
+```
+
+**Note:** This is a **manual replacement flow, not automatic**. The default `devclaw up` uses **standard Azure Container Apps with Express mode** for fast cold-start (nearly identical cost/performance to sandbox, no custom disk required). See "Host modes" below.
+
+---
+
+## Host modes: Express vs. standard vs. ACA Sandbox
+
+| Mode | Default? | Cold start | Cost | Easy Auth + Teams | Setup |
+|------|----------|-----------|------|------------------|-------|
+| **Container Apps (standard)** | ✅ YES | ~30–60s | $0 when idle | ✅ Full support | `devclaw up` |
+| **Container Apps (Express)** | Manual | ~10–20s | $0 when idle | ✅ Full support | `azd env set USE_EXPRESS_ENV true` before `devclaw up` |
+| **ACA Sandbox** | ❌ No | ~5–10s | $0 when idle | ❌ Not yet | Manual disk provisioning + `aca` CLI (future) |
+
+**Decision:** The template defaults to **standard Container Apps** (no Express) because it's the most compatible with Easy Auth, Teams integration, and storage state persistence. If you need faster cold-start, set `USE_EXPRESS_ENV=true` in your `azd env` before `devclaw up`. ACA Sandbox is documented here for users who want to explore it separately with their own disk images.
 
 ---
 
@@ -93,7 +122,12 @@ not `devclaw test`.
 | `AZURE_LOCATION` | prompted | — | Must be in the allowed region list (below) |
 | `AZURE_SUBSCRIPTION_ID` | no | prompted | Set to skip the interactive picker |
 | `AZURE_OPENAI_LOCATION` | no | = `AZURE_LOCATION` | Override when the chosen region lacks the model SKU (e.g. ACA in `eastasia`, OpenAI in `eastus2`) |
-| `USE_EXPRESS_ENV` | no | `false` | ACA Express mode (preview); only in supported regions (East Asia, West Central US) |
+| `SQUAD_NAME` | no | `core` | Logical squad name used for tagging, naming, and state isolation |
+| `SQUAD_INSTANCE` | no | `1` | Numeric squad instance identifier; use distinct values per squad deployment |
+| `OPENCLAW_MIN_REPLICAS` | no | `1` | Minimum ACA replicas for the OpenClaw runtime |
+| `OPENCLAW_MAX_REPLICAS` | no | `3` | Maximum ACA replicas for the OpenClaw runtime (must be >= min) |
+| `ACA_SANDBOX_MODE` | no | `standard` | Host mode selector: `standard` (default) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`); `sandbox` marks intent to explore ACA Sandbox replacement (requires separate disk provisioning outside this template, see "ACA Sandbox replacement flow" above). |
+| `USE_EXPRESS_ENV` | no | `false` | When set to `true`, Container Apps environment is created in Express mode (preview) for faster cold-start (~10–20s vs. ~30–60s). Only applicable when `ACA_SANDBOX_MODE=standard`. Supported regions include East Asia and West Central US. Express mode disables storage mounts, so session state does not persist across replica restarts. |
 | `SKIP_STORAGE` | no | `false` | Set to `true` if Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Skips the storage account, file share, and volume mount. Trade-off: gateway token + sessions don't persist across replica restarts. |
 | `SERVICE_MANAGEMENT_REFERENCE` | no | unset | Set to a service-management-reference GUID if your tenant requires `serviceManagementReference` on every new app registration (common on large corporate tenants). The preprovision hook passes it to `az ad app create` for both the Easy Auth and the Bot app registrations. |
 | `ENABLE_TEAMS` | no | unset (Teams disabled) | Set to `true` *before* `devclaw up` (or before `devclaw teams`) to opt into the Microsoft Teams add-on. When unset, the preprovision hook skips bot app creation, Bicep skips the Azure Bot + Teams channel + MSTEAMS_* env vars, and the runtime disables the msteams plugin. |
@@ -130,6 +164,17 @@ azd env set AZURE_OPENAI_LOCATION eastus2
 3. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min.
 4. Verify: `devclaw status` (expect `Running`), then open the URL in a browser —
    Entra ID prompts for Microsoft sign-in, then the WebChat UI loads.
+
+### Orchestrate multiple squads
+Use one `azd` environment per squad deployment:
+```bash
+devclaw squad init alpha eastus2 eastus2  # creates/selects squad-alpha
+devclaw squad use alpha                    # switch active deployment context
+devclaw squad current                      # show selected squad env
+devclaw squad list                         # enumerate squad environments
+```
+After selecting a squad environment, run the normal `devclaw up/deploy/status/stop/start`
+commands to operate that squad independently.
 
 ### Save cost when idle
 `devclaw stop` scales to 0 replicas ($0, state preserved on Azure Files);

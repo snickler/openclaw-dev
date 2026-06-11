@@ -30,10 +30,8 @@ param aiModelCapacity int = 10
 
 // Deploy the Azure OpenAI account via AVM (account only — no model deployment).
 // We create the model deployment as a native resource below so we can attach a
-// custom RAI (content-filter) policy that disables Prompt Shield jailbreak
-// blocking. Without this, OpenClaw's "Sender (untrusted metadata)" envelope
-// pattern-matches as injection on the Responses API and gets a 0-token canned
-// refusal returned before the model runs.
+// custom RAI (content-filter) policy. This keeps explicit filter defaults in
+// source instead of relying on opaque platform defaults.
 module openai 'br/public:avm/res/cognitive-services/account:0.13.2' = {
   name: 'openai-account'
   params: {
@@ -62,29 +60,27 @@ resource openaiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existin
   dependsOn: [openai]
 }
 
-// Custom RAI (content filter) policy — same defaults as Microsoft.DefaultV2
-// EXCEPT Prompt Shield jailbreak detection is non-blocking. This is required
-// for OpenClaw's anti-injection sender envelope to pass through on the
-// Responses API; standard hate/violence/sexual/self-harm filters stay enabled.
+// Custom RAI (content filter) policy — explicit secure defaults. Prompt
+// jailbreak and indirect attack detections remain blocking by default, and
+// standard hate/violence/sexual/self-harm filters stay enabled.
 resource raiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies@2024-10-01' = {
   parent: openaiAccount
-  name: 'openclaw-relaxed-jailbreak'
+  name: 'openclaw-default-secure'
   properties: {
     basePolicyName: 'Microsoft.DefaultV2'
     mode: 'Default'
     contentFilters: [
-      // Input — relax jailbreak detection from blocking to annotate-only
+      // Input — keep jailbreak detection blocking
       {
         name: 'Jailbreak'
-        blocking: false
+        blocking: true
         enabled: true
         source: 'Prompt'
       }
-      // Input — relax indirect attack (XPIA) detection. OpenClaw's
-      // "Sender (untrusted metadata)" envelope pattern-matches as XPIA.
+      // Input — keep indirect attack (XPIA) detection blocking
       {
         name: 'Indirect Attack'
-        blocking: false
+        blocking: true
         enabled: true
         source: 'Prompt'
       }
@@ -102,7 +98,7 @@ resource raiPolicy 'Microsoft.CognitiveServices/accounts/raiPolicies@2024-10-01'
   }
 }
 
-// Model deployment with the relaxed RAI policy attached.
+// Model deployment with the hardened RAI policy attached.
 resource aiModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployAiModel) {
   parent: openaiAccount
   name: aiModelName

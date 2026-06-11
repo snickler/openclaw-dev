@@ -48,10 +48,18 @@ param easyAuthAppId string = ''
 @description('Container image to deploy. azd populates from SERVICE_OPENCLAW_IMAGE_NAME after first deploy; empty on first provision (placeholder used).')
 param containerImage string = ''
 
-@description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. Only enable in regions that support Express — e.g. East Asia, West Central US.')
+@description('Host mode selector: "standard" (default) for Azure Container Apps with optional Express mode cold-start, or "sandbox" to document ACA Sandbox intent (requires separate disk provisioning outside this template). See SKILL.md for details.')
+param acaSandboxMode string = 'standard'
+
+@description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled.')
 param useExpressEnv string = 'false'
 
-var expressEnabled = toLower(useExpressEnv) == 'true'
+var normalizedSandboxMode = toLower(trim(acaSandboxMode))
+var expressEnabled = normalizedSandboxMode == 'sandbox'
+  ? true
+  : normalizedSandboxMode == 'standard'
+    ? toLower(useExpressEnv) == 'true'
+    : false
 
 @description('Set SKIP_STORAGE=true in your azd env to skip the storage account + Azure Files volume mount. Use on subscriptions where Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Trade-off: gateway token + sessions do not persist across replica restarts.')
 param skipStorage string = 'false'

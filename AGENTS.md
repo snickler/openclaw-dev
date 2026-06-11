@@ -4,7 +4,7 @@ Guidance for AI coding agents (Claude Code, OpenAI Codex, Cursor, Gemini CLI,
 Amp, and others) working in this repository.
 
 This repo deploys **OpenClaw** as a secure, hosted AI assistant on **Azure
-Container Apps**, wired to **Azure OpenAI in Foundry Models** over a **Managed
+Container Apps** (default) or **ACA Sandbox** (opt-in), wired to **Azure OpenAI in Foundry Models** over a **Managed
 Identity** (no API keys), gated by **Entra ID Easy Auth**, with an optional
 **Microsoft Teams** channel. Alpha, single-tenant, dev/test.
 
@@ -30,7 +30,7 @@ It contains the command map, env-var contract, region list, and error catalog.
   require it on new app regs), `SKIP_STORAGE=true` (subscriptions whose Azure
   Policy blocks shared-key storage — ACA file mounts need shared keys today;
   gateway token + sessions won't persist across replica restarts). ACR admin
-  is already disabled; image pulls use the container app's managed identity.
+  is already disabled; Container Apps uses managed identity for model RBAC.
 - **Region** `AZURE_LOCATION` must be in the allowed list in `infra/main.bicep`;
   set `AZURE_OPENAI_LOCATION` separately if that region lacks the model SKU.
 - **Azure OpenAI only today** (default `gpt-5-mini`). Don't claim Claude / other
@@ -43,7 +43,7 @@ It contains the command map, env-var contract, region list, and error catalog.
 - **Confirm before destructive actions** (`devclaw down`/`azd down`,
   `az ad app delete`, RBAC removal, deleting state): state what will be deleted and
   get explicit confirmation. Never use `--force`/`--no-prompt` to skip it.
-- **To pause cheaply** use `devclaw stop` (scale to 0, $0, state kept), not `down`.
+- **To pause cheaply** use `devclaw stop` (scale to 0), not `down`.
 
 ## Verify
 

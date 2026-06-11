@@ -1,7 +1,7 @@
 # Copilot instructions — openclaw-dev
 
-This repo deploys **OpenClaw** as a secure, hosted AI assistant on **Azure
-Container Apps**, wired to **Azure OpenAI in Foundry Models** over a **Managed
+This repo deploys **OpenClaw** as a secure, hosted AI assistant on **ACA
+Sandbox (default) or Azure Container Apps (legacy)**, wired to **Azure OpenAI in Foundry Models** over a **Managed
 Identity** (no API keys), gated by **Entra ID Easy Auth**, with an optional
 **Microsoft Teams** channel. It is an alpha, single-tenant dev/test template.
 
@@ -31,7 +31,7 @@ instead of guessing.
   require it on new app regs), `SKIP_STORAGE=true` (subscriptions whose Azure
   Policy blocks shared-key storage — ACA file mounts need shared keys today;
   gateway token + sessions won't persist across replica restarts). ACR admin
-  is already disabled; image pulls use the container app's managed identity.
+  is already disabled; sandbox mode uses sandbox-group managed identity for model RBAC.
 - **Model scope:** today this targets **Azure OpenAI** models only (default
   `gpt-5-mini`). Do not claim Claude or other Foundry Models work today — they are
   "near future" scope.
@@ -44,7 +44,7 @@ instead of guessing.
   `az ad app delete`, RBAC removal, or deleting state, state exactly what will be
   destroyed and get explicit user confirmation. Never pass `--force`/`--no-prompt`
   to skip a confirmation the user hasn't given.
-- **Cost:** to pause, use `devclaw stop` (scale to 0, $0, state kept) — not `down`.
+- **Cost:** to pause, use `devclaw stop` (sandbox suspend / scale to 0) — not `down`.
 
 ## Quick verification
 
