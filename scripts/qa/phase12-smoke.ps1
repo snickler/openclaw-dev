@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$devclawCmd = Join-Path $repoRoot 'devclaw.cmd'
+$devclawCmd = if ($IsWindows) { Join-Path $repoRoot 'devclaw.cmd' } else { Join-Path $repoRoot 'devclaw' }
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-Result {
@@ -50,11 +50,20 @@ function Run-CliCommand {
     param(
         [string]$CommandLine
     )
-    $raw = & $env:ComSpec /c $CommandLine 2>&1
+    if ($IsWindows) {
+        $raw = & $env:ComSpec /c $CommandLine 2>&1
+    } else {
+        $raw = & /bin/bash -lc $CommandLine 2>&1
+    }
     return [pscustomobject]@{
         exitCode = $LASTEXITCODE
         output   = ($raw | Out-String).TrimEnd()
     }
+}
+
+function Get-NullRedirect {
+    if ($IsWindows) { return '>nul' }
+    return '>/dev/null'
 }
 
 if ($Mode -in @('Static', 'All')) {
@@ -66,14 +75,14 @@ if ($Mode -in @('Static', 'All')) {
     Assert-FileContains -Scenario 'S6' -Check 'Hook can recover from repo-local az auth' -Path (Join-Path $repoRoot 'infra\hooks\preprovision.ps1') -Pattern 'falling back to default config dir' -Command 'Select-String infra/hooks/preprovision.ps1 AZURE_CONFIG_DIR'
     Assert-FileContains -Scenario 'S7' -Check 'Post-deploy ingress/scale repair present' -Path (Join-Path $repoRoot 'infra\hooks\postdeploy.ps1') -Pattern 'Scaling container app from 0 to 1 replica|targetPort: \$currentPort -> 18789' -Command 'Select-String infra/hooks/postdeploy.ps1 "Scaling container app|targetPort"'
 
-    $mainBuild = Run-CliCommand "az bicep build --file `"$repoRoot\infra\main.bicep`" --stdout >nul"
+    $mainBuild = Run-CliCommand "az bicep build --file `"$((Join-Path $repoRoot 'infra\main.bicep'))`" --stdout $(Get-NullRedirect)"
     if ($mainBuild.exitCode -eq 0) {
         Add-Result -Scenario 'S8' -Status 'PASS' -Check 'main.bicep compiles' -Evidence 'az bicep build returned exit code 0' -Diagnostics '' -Command 'az bicep build --file infra/main.bicep --stdout'
     } else {
         Add-Result -Scenario 'S8' -Status 'FAIL' -Check 'main.bicep compiles' -Evidence $mainBuild.output -Diagnostics 'Bicep compile failed.' -Command 'az bicep build --file infra/main.bicep --stdout'
     }
 
-    $acaBuild = Run-CliCommand "az bicep build --file `"$repoRoot\infra\aca.bicep`" --stdout >nul"
+    $acaBuild = Run-CliCommand "az bicep build --file `"$((Join-Path $repoRoot 'infra\aca.bicep'))`" --stdout $(Get-NullRedirect)"
     if ($acaBuild.exitCode -eq 0) {
         $warn = ($acaBuild.output -split "`r?`n" | Where-Object { $_ -match 'Warning BCP' })
         if ($warn.Count -gt 0) {
@@ -88,7 +97,7 @@ if ($Mode -in @('Static', 'All')) {
 
 if ($Mode -in @('Live', 'All')) {
     if ($RunDeploy) {
-        $deployProbe = Run-CliCommand "`"$devclawCmd`" up"
+        $deployProbe = if ($IsWindows) { Run-CliCommand "`"$devclawCmd`" up" } else { Run-CliCommand "bash `"$devclawCmd`" up" }
         if ($deployProbe.exitCode -eq 0) {
             Add-Result -Scenario 'L0' -Status 'PASS' -Check 'Deploy command completed' -Evidence ($deployProbe.output -split "`r?`n" | Select-Object -First 12) -Diagnostics '' -Command 'devclaw.cmd up'
         } else {
@@ -98,7 +107,7 @@ if ($Mode -in @('Live', 'All')) {
         Add-Result -Scenario 'L0' -Status 'BLOCKED' -Check 'Deploy command completed' -Evidence 'Skipped by default to avoid unintentional Azure provisioning/cost.' -Diagnostics 'Re-run with -RunDeploy after az login + azd auth login in target subscription.' -Command 'devclaw.cmd up'
     }
 
-    $statusProbe = Run-CliCommand "`"$devclawCmd`" status"
+    $statusProbe = if ($IsWindows) { Run-CliCommand "`"$devclawCmd`" status" } else { Run-CliCommand "bash `"$devclawCmd`" status" }
     $statusApp = [regex]::Match($statusProbe.output, '(?m)^\s*App:\s*(.+?)\s*$').Groups[1].Value.Trim()
     $statusState = [regex]::Match($statusProbe.output, '(?m)^\s*Status:\s*(.+?)\s*$').Groups[1].Value.Trim()
     $statusUrl = [regex]::Match($statusProbe.output, '(?m)^\s*URL:\s*(.+?)\s*$').Groups[1].Value.Trim()
@@ -108,7 +117,7 @@ if ($Mode -in @('Live', 'All')) {
         Add-Result -Scenario 'L1' -Status 'FAIL' -Check 'Status command returns actionable state' -Evidence ($statusProbe.output -split "`r?`n" | Select-Object -First 8) -Diagnostics 'Status output is missing app/status/url values when no deployment exists.' -Command 'devclaw.cmd status'
     }
 
-    $testProbe = Run-CliCommand "`"$devclawCmd`" test"
+    $testProbe = if ($IsWindows) { Run-CliCommand "`"$devclawCmd`" test" } else { Run-CliCommand "bash `"$devclawCmd`" test" }
     $containerStatus = [regex]::Match($testProbe.output, '(?m)^\s*Container:\s*(.+?)\s*$').Groups[1].Value.Trim()
     if (($containerStatus) -and ($containerStatus -notmatch '^-')) {
         Add-Result -Scenario 'L2' -Status 'PASS' -Check 'Test command reports container state' -Evidence "Container line: $containerStatus" -Diagnostics '' -Command 'devclaw.cmd test'
