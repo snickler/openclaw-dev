@@ -1,5 +1,8 @@
 name: Phase 3 CI/CD
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +30,8 @@ on:
       - scripts/**
       - src/**
       - infra/**
+  schedule:
+    - cron: "0 12 * * 1"
 
 jobs:
   validate:
@@ -66,7 +71,7 @@ jobs:
         run: .\scripts\qa\phase12-smoke.ps1 -Mode Static -NoFileReport
 
   prepare-regions:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.regions.outputs.matrix }}
@@ -83,11 +88,11 @@ jobs:
               f.write(f"matrix={json.dumps({'region': regions})}\n")
           PY
         env:
-          TARGET_REGIONS: ${{ inputs.target_regions }}
+          TARGET_REGIONS: ${{ inputs.target_regions || 'eastus2,westcentralus' }}
 
   build-and-sign:
     needs: validate
-    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -109,7 +114,7 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: Sign sandbox metadata
-        if: inputs.sign_artifacts
+        if: github.event_name == 'schedule' || inputs.sign_artifacts
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -120,7 +125,7 @@ jobs:
 
       - name: Build distribution manifest
         env:
-          TARGET_REGIONS: ${{ inputs.target_regions }}
+          TARGET_REGIONS: ${{ inputs.target_regions || 'eastus2,westcentralus' }}
         run: |
           python - <<'PY'
           import json, os, pathlib
@@ -151,7 +156,7 @@ jobs:
     needs:
       - build-and-sign
       - prepare-regions
-    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -209,3 +214,15 @@ jobs:
               --source "./dist/${{ matrix.region }}" \
               --auth-mode login \
               --overwrite
+
+            uploaded_count=$(az storage blob list \
+              --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
+              --container-name "${{ secrets.AZURE_STORAGE_CONTAINER }}" \
+              --prefix "sandbox/${{ matrix.region }}/" \
+              --auth-mode login \
+              --query "length(@)" -o tsv)
+
+            if [ "$uploaded_count" -lt 1 ]; then
+              echo "No blobs found after publish for region: ${{ matrix.region }}" >&2
+              exit 1
+            fi

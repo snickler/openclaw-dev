@@ -166,6 +166,26 @@ azd env set AZURE_OPENAI_LOCATION eastus2
 ./devclaw up
 ```
 
+### Phase 3 CI/CD publish prerequisites (GitHub Actions -> Azure Blob)
+
+For `phase3-ci-cd.yml` to publish regional bundles to Azure Blob, configure all of:
+
+1. GitHub repo secrets:
+   - `AZURE_CLIENT_ID`
+   - `AZURE_TENANT_ID`
+   - `AZURE_SUBSCRIPTION_ID`
+   - `AZURE_STORAGE_ACCOUNT`
+   - `AZURE_STORAGE_CONTAINER`
+2. Federated credential (OIDC) on the user-assigned managed identity used by `AZURE_CLIENT_ID`:
+   - Issuer: `https://token.actions.githubusercontent.com`
+   - Audience: `api://AzureADTokenExchange`
+   - Subject (branch-scoped): `repo:<owner>/<repo>:ref:refs/heads/main`
+3. Storage RBAC for that identity:
+   - `Storage Blob Data Contributor` on the target storage account scope.
+
+The workflow publishes with `--auth-mode login` and verifies that blobs exist under:
+`<container>/sandbox/<region>/`.
+
 ---
 
 ## Common tasks
