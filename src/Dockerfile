@@ -10,20 +10,13 @@ ARG HTTP_PROXY_VERSION=1.18.1
 # Without git the postinstall fails silently and the gateway crashes at boot.
 # We rewrite SSH→HTTPS so git clones work without SSH keys, and install
 # ca-certificates so git can verify GitHub's TLS certificate.
+# apt validates package signatures against Debian's trusted keyring.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/* && \
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     npm install -g openclaw@${OPENCLAW_VERSION}
-
-# Install critical bundled plugin runtime deps that postinstall misses
-RUN cd /usr/local/lib/node_modules/openclaw && \
-    npm install --omit=dev --no-save --package-lock=false \
-      @microsoft/teams.api@2.0.6 @microsoft/teams.apps@2.0.6 \
-      @buape/carbon@0.14.0 @larksuiteoapi/node-sdk@1.60.0 \
-      @slack/bolt@4.6.0 grammy@1.0.0 @grammyjs/runner@2.0.3 \
-      express@5.2.1 2>/dev/null || true
 
 # Create directories for config and state
 RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
@@ -37,7 +30,14 @@ RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
 RUN openclaw plugins install npm:@openclaw/msteams@${OPENCLAW_MSTEAMS_VERSION} || \
     ( mkdir -p /root/.openclaw/npm && cd /root/.openclaw/npm && \
       npm init -y >/dev/null && \
-      npm install --omit=dev --no-save --package-lock=false @openclaw/msteams@${OPENCLAW_MSTEAMS_VERSION} )
+      npm pkg set private=true >/dev/null && \
+      npm pkg set "dependencies.@openclaw/msteams=${OPENCLAW_MSTEAMS_VERSION}" >/dev/null && \
+      npm install --package-lock-only --ignore-scripts --omit=dev --no-audit --no-fund >/dev/null && \
+      npm ci --omit=dev --no-audit --no-fund )
+
+# Install bundled plugin runtime deps using a lockfile-driven helper.
+COPY install-deps.cjs /opt/openclaw-auth/install-deps.cjs
+RUN node /opt/openclaw-auth/install-deps.cjs
 
 # Install @azure/identity (for auth-proxy.mjs) and http-proxy (for gateway-proxy.mjs).
 # gateway-proxy.mjs is a tiny reverse proxy that routes /api/messages (Bot
@@ -46,7 +46,8 @@ RUN openclaw plugins install npm:@openclaw/msteams@${OPENCLAW_MSTEAMS_VERSION} |
 # binds its own Express server on a separate port — without the proxy, ACA's
 # single public ingress on :18789 only reaches the gateway and the bot 404s.
 WORKDIR /opt/openclaw-auth
-RUN npm init -y && npm install @azure/identity@${AZURE_IDENTITY_VERSION} http-proxy@${HTTP_PROXY_VERSION}
+COPY package.json package-lock.json /opt/openclaw-auth/
+RUN npm ci --omit=dev
 WORKDIR /
 
 # Copy pre-configured openclaw.json (points agent to Azure OpenAI via env vars)

@@ -1,0 +1,98 @@
+[
+  {
+    "scenario": "L0",
+    "status": "BLOCKED",
+    "check": "Deploy command completed",
+    "evidence": "Skipped by default to avoid unintentional Azure provisioning/cost.",
+    "diagnostics": "Re-run with -RunDeploy after az login + azd auth login in target subscription.",
+    "command": "devclaw.cmd up"
+  },
+  {
+    "scenario": "L1",
+    "status": "FAIL",
+    "check": "Status command returns actionable state",
+    "evidence": "   devclaw   --------   App:        Status:     URL:     https://   RG:      rg-squad-core",
+    "diagnostics": "Status output is missing app/status/url values when no deployment exists.",
+    "command": "devclaw.cmd status"
+  },
+  {
+    "scenario": "L2",
+    "status": "FAIL",
+    "check": "Test command reports container state",
+    "evidence": "   Container:  - wait or check 'devclaw logs'    To test, open Azure Portal > Container App > Console > /bin/bash   Then run: openclaw agent --message \"Hello from the cloud\"",
+    "diagnostics": "Container state is blank/ambiguous; fallback diagnostics are not specific.",
+    "command": "devclaw.cmd test"
+  },
+  {
+    "scenario": "S1",
+    "status": "PASS",
+    "check": "Default host mode is sandbox",
+    "evidence": "Matched pattern '\"acaSandboxMode\"\\s*:\\s*\\{\\s*\"value\"\\s*:\\s*\"\\$\\{ACA_SANDBOX_MODE=sandbox\\}\"' in D:\\repos\\openclaw-dev\\infra\\main.parameters.json",
+    "diagnostics": "",
+    "command": "Get-Content infra/main.parameters.json"
+  },
+  {
+    "scenario": "S2",
+    "status": "PASS",
+    "check": "Standard fallback path documented",
+    "evidence": "Matched pattern 'azd env set ACA_SANDBOX_MODE standard' in D:\\repos\\openclaw-dev\\README.md",
+    "diagnostics": "",
+    "command": "Select-String README.md ACA_SANDBOX_MODE"
+  },
+  {
+    "scenario": "S3",
+    "status": "PASS",
+    "check": "Storage policy fallback documented",
+    "evidence": "Matched pattern 'azd env set SKIP_STORAGE true' in D:\\repos\\openclaw-dev\\README.md",
+    "diagnostics": "",
+    "command": "Select-String README.md SKIP_STORAGE"
+  },
+  {
+    "scenario": "S4",
+    "status": "PASS",
+    "check": "OpenAI region fallback hint present",
+    "evidence": "Matched pattern 'AZURE_OPENAI_LOCATION eastus2' in D:\\repos\\openclaw-dev\\devclaw.cmd",
+    "diagnostics": "",
+    "command": "Select-String devclaw.cmd AZURE_OPENAI_LOCATION"
+  },
+  {
+    "scenario": "S5",
+    "status": "PASS",
+    "check": "Teams remains opt-in",
+    "evidence": "Matched pattern 'Teams integration not enabled — skipping bot app registration' in D:\\repos\\openclaw-dev\\infra\\hooks\\preprovision.ps1",
+    "diagnostics": "",
+    "command": "Select-String infra/hooks/preprovision.ps1 Teams integration"
+  },
+  {
+    "scenario": "S6",
+    "status": "PASS",
+    "check": "Hook can recover from repo-local az auth",
+    "evidence": "Matched pattern 'falling back to default config dir' in D:\\repos\\openclaw-dev\\infra\\hooks\\preprovision.ps1",
+    "diagnostics": "",
+    "command": "Select-String infra/hooks/preprovision.ps1 AZURE_CONFIG_DIR"
+  },
+  {
+    "scenario": "S7",
+    "status": "PASS",
+    "check": "Post-deploy ingress/scale repair present",
+    "evidence": "Matched pattern 'Scaling container app from 0 to 1 replica|targetPort: \\$currentPort -> 18789' in D:\\repos\\openclaw-dev\\infra\\hooks\\postdeploy.ps1",
+    "diagnostics": "",
+    "command": "Select-String infra/hooks/postdeploy.ps1 \"Scaling container app|targetPort\""
+  },
+  {
+    "scenario": "S8",
+    "status": "PASS",
+    "check": "main.bicep compiles",
+    "evidence": "az bicep build returned exit code 0",
+    "diagnostics": "",
+    "command": "az bicep build --file infra/main.bicep --stdout"
+  },
+  {
+    "scenario": "S9",
+    "status": "WARN",
+    "check": "aca.bicep compiles cleanly",
+    "evidence": "WARNING: D:\\repos\\openclaw-dev\\infra\\aca.bicep(154,9) : Warning BCP334: The provided value can have a length as small as 3 and may be too short to assign to a target with a configured minimum length of 5. [https://aka.ms/bicep/core-diagnostics#BCP334]; D:\\repos\\openclaw-dev\\infra\\aca.bicep(191,9) : Warning BCP334: The provided value can have a length as small as 2 and may be too short to assign to a target with a configured minimum length of 3. [https://aka.ms/bicep/core-diagnostics#BCP334]; D:\\repos\\openclaw-dev\\infra\\aca.bicep(240,22) : Warning BCP081: Resource type \"Microsoft.App/managedEnvironments@2026-03-02-preview\" does not have types available. Bicep is unable to validate resource properties prior to deployment, but this will not block the resource from being deployed. [https://aka.ms/bicep/core-diagnostics#BCP081]",
+    "diagnostics": "Compiles, but warnings should be triaged for stricter QA gates.",
+    "command": "az bicep build --file infra/aca.bicep --stdout"
+  }
+]

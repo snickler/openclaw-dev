@@ -64,7 +64,7 @@
 
 **Owner:** TBD
 
-**Blocker:** ACA Sandbox API must reach stable GA (not preview)
+**Risk accepted:** ACA Sandbox API is still preview; Phase 3 automation proceeds on the current CLI surface and will be refreshed if the API changes.
 
 **Acceptance criteria:**
 - New image auto-published to Azure Snapshots on dependency update
@@ -150,7 +150,7 @@ Phase 2 collapses steps 2–4 into `devclaw sandbox auto-build --manifest depend
 
 | Blocker | Risk | Mitigation |
 |---------|------|-----------|
-| **ACA Sandbox API in preview** | Phase 2 rollout breaks on API changes | Wait for stable GA; Phase 1 remains manual-friendly |
+| **ACA Sandbox API in preview** | Phase 3 rollout may need refreshes if the API changes | Accepted risk; proceed on the current CLI surface |
 | **Parker security sign-off** | Build script has unvetted deps | Include Parker in Phase 1 scaffolding review |
 | **Multi-region replication latency** | Phase 3 images slow to distribute | Pre-stage Phase 3 CI to run in parallel regions |
 

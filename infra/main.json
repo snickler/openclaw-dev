@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "10262860736406798176"
+      "templateHash": "6317454443212054702"
     }
   },
   "parameters": {
@@ -37,6 +37,13 @@
           "type": "location"
         },
         "description": "Primary location for all resources"
+      }
+    },
+    "resourceToken": {
+      "type": "string",
+      "defaultValue": "[toLower(uniqueString(subscription().id, parameters('environmentName'), parameters('location')))]",
+      "metadata": {
+        "description": "Unique token for resource naming"
       }
     },
     "botAppId": {
@@ -78,14 +85,28 @@
       "type": "string",
       "defaultValue": "sandbox",
       "metadata": {
-        "description": "Sandbox mode selector for ACA host workflow. Set ACA_SANDBOX_MODE=sandbox for ACA Sandbox-first operations. Use standard only for legacy Container Apps flow."
+        "description": "Host mode selector: \"sandbox\" (default) for ACA Sandbox (requires custom disk image provisioning), or \"standard\" for legacy Azure Container Apps with optional Express mode cold-start. See SKILL.md for details."
+      }
+    },
+    "sandboxDiskName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "ACA Sandbox runtime disk label/name. Optional in phase 1/2 while disk wiring is preprovisioned externally."
+      }
+    },
+    "sandboxDiskSnapshotId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "ACA Sandbox disk snapshot resource ID. Optional in phase 1/2 while sandbox disk APIs remain preview."
       }
     },
     "useExpressEnv": {
       "type": "string",
       "defaultValue": "false",
       "metadata": {
-        "description": "Legacy toggle for ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. Ignored when ACA_SANDBOX_MODE is explicitly set to sandbox/standard."
+        "description": "Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled."
       }
     },
     "skipStorage": {
@@ -129,18 +150,11 @@
       "metadata": {
         "description": "Maximum ACA replicas for the OpenClaw runtime (set via OPENCLAW_MAX_REPLICAS)."
       }
-    },
-    "resourceToken": {
-      "type": "string",
-      "defaultValue": "[toLower(uniqueString(subscription().id, parameters('environmentName'), parameters('location'), parameters('squadName'), parameters('squadInstance')))]",
-      "metadata": {
-        "description": "Unique token for resource naming"
-      }
     }
   },
   "variables": {
     "normalizedSandboxMode": "[toLower(trim(parameters('acaSandboxMode')))]",
-    "expressEnabled": "[if(equals(variables('normalizedSandboxMode'), 'sandbox'), true(), if(equals(variables('normalizedSandboxMode'), 'standard'), false(), equals(toLower(parameters('useExpressEnv')), 'true')))]",
+    "expressEnabled": "[if(equals(variables('normalizedSandboxMode'), 'sandbox'), true(), if(equals(variables('normalizedSandboxMode'), 'standard'), equals(toLower(parameters('useExpressEnv')), 'true'), false()))]",
     "storageSkipped": "[equals(toLower(parameters('skipStorage')), 'true')]",
     "effectiveOpenaiLocation": "[if(empty(parameters('openaiLocation')), parameters('location'), parameters('openaiLocation'))]",
     "normalizedSquadName": "[toLower(replace(replace(replace(trim(parameters('squadName')), '_', '-'), ' ', '-'), '.', '-'))]",
@@ -3009,6 +3023,15 @@
           "containerImage": {
             "value": "[parameters('containerImage')]"
           },
+          "acaSandboxMode": {
+            "value": "[variables('normalizedSandboxMode')]"
+          },
+          "sandboxDiskName": {
+            "value": "[parameters('sandboxDiskName')]"
+          },
+          "sandboxDiskSnapshotId": {
+            "value": "[parameters('sandboxDiskSnapshotId')]"
+          },
           "useExpressEnv": {
             "value": "[variables('expressEnabled')]"
           },
@@ -3035,7 +3058,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "1555045847141245274"
+              "templateHash": "2840977900217840789"
             }
           },
           "parameters": {
@@ -3108,6 +3131,27 @@
                 "description": "Container image to deploy. azd populates this from SERVICE_OPENCLAW_IMAGE_NAME after the first `azd deploy`; empty on first provision so a placeholder is used."
               }
             },
+            "acaSandboxMode": {
+              "type": "string",
+              "defaultValue": "sandbox",
+              "metadata": {
+                "description": "Host mode selector (`sandbox` default, `standard` legacy)."
+              }
+            },
+            "sandboxDiskName": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "ACA Sandbox runtime disk label/name (phase 1/2 contract input)."
+              }
+            },
+            "sandboxDiskSnapshotId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "ACA Sandbox disk snapshot resource ID (phase 1/2 contract input)."
+              }
+            },
             "skipStorage": {
               "type": "bool",
               "defaultValue": false,
@@ -3153,7 +3197,10 @@
             "effectiveMinReplicas": "[max(0, parameters('minReplicas'))]",
             "effectiveMaxReplicas": "[max(variables('effectiveMinReplicas'), parameters('maxReplicas'))]",
             "stateShareName": "[take(format('openclaw-{0}-{1}-state', variables('effectiveSquadName'), variables('effectiveSquadInstance')), 63)]",
-            "storageEnabled": "[and(not(parameters('useExpressEnv')), not(parameters('skipStorage')))]",
+            "normalizedSandboxMode": "[toLower(trim(parameters('acaSandboxMode')))]",
+            "sandboxModeEnabled": "[equals(variables('normalizedSandboxMode'), 'sandbox')]",
+            "sandboxDiskConfigured": "[or(not(empty(parameters('sandboxDiskSnapshotId'))), not(empty(parameters('sandboxDiskName'))))]",
+            "storageEnabled": "[and(and(not(variables('sandboxModeEnabled')), not(parameters('useExpressEnv'))), not(parameters('skipStorage')))]",
             "teamsSecrets": "[if(variables('teamsEnabled'), createArray(createObject('name', 'msteams-app-password', 'value', parameters('botAppSecret'))), createArray())]",
             "containerSecrets": "[variables('teamsSecrets')]",
             "baseEnv": [
@@ -3180,6 +3227,14 @@
               {
                 "name": "OPENCLAW_SQUAD_KEY",
                 "value": "[variables('squadKey')]"
+              },
+              {
+                "name": "OPENCLAW_HOST_MODE",
+                "value": "[variables('normalizedSandboxMode')]"
+              },
+              {
+                "name": "OPENCLAW_SANDBOX_DISK_CONFIGURED",
+                "value": "[string(variables('sandboxDiskConfigured'))]"
               }
             ],
             "teamsEnv": "[if(variables('teamsEnabled'), createArray(createObject('name', 'MSTEAMS_APP_ID', 'value', parameters('botAppId')), createObject('name', 'MSTEAMS_APP_PASSWORD', 'secretRef', 'msteams-app-password'), createObject('name', 'MSTEAMS_TENANT_ID', 'value', parameters('botTenantId'))), createArray())]",
@@ -3490,6 +3545,18 @@
               "type": "string",
               "value": "[format('openclaw-{0}', parameters('resourceToken'))]"
             },
+            "ACA_SANDBOX_MODE": {
+              "type": "string",
+              "value": "[variables('normalizedSandboxMode')]"
+            },
+            "SANDBOX_DISK_NAME": {
+              "type": "string",
+              "value": "[parameters('sandboxDiskName')]"
+            },
+            "SANDBOX_DISK_SNAPSHOT_ID": {
+              "type": "string",
+              "value": "[parameters('sandboxDiskSnapshotId')]"
+            },
             "BOT_APP_ID": {
               "type": "string",
               "value": "[parameters('botAppId')]"
@@ -3538,6 +3605,18 @@
     "BOT_APP_ID": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'host'), '2025-04-01').outputs.BOT_APP_ID.value]"
+    },
+    "ACA_SANDBOX_MODE": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'host'), '2025-04-01').outputs.ACA_SANDBOX_MODE.value]"
+    },
+    "SANDBOX_DISK_NAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'host'), '2025-04-01').outputs.SANDBOX_DISK_NAME.value]"
+    },
+    "SANDBOX_DISK_SNAPSHOT_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'host'), '2025-04-01').outputs.SANDBOX_DISK_SNAPSHOT_ID.value]"
     },
     "SQUAD_NAME": {
       "type": "string",

@@ -30,6 +30,7 @@ if "%COMMAND%"=="logs" goto :logs
 if "%COMMAND%"=="test" goto :test
 if "%COMMAND%"=="deploy" goto :deploy
 if "%COMMAND%"=="teams" goto :teams
+if "%COMMAND%"=="sandbox" goto :sandbox
 if "%COMMAND%"=="squad" goto :squad
 goto :help
 
@@ -124,16 +125,38 @@ echo.
 exit /b 0
 
 :status
+set "RG="
+set "APP="
+set "STATUS="
+set "FQDN="
 for /f "tokens=*" %%a in ('azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "RG=%%a"
+if "%RG%"=="" (
+    echo.
+    echo   No deployment found. Run 'devclaw up' first.
+    echo.
+    exit /b 0
+)
 for /f "tokens=*" %%a in ('az containerapp list --resource-group %RG% --query "[0].name" -o tsv 2^>nul') do set "APP=%%a"
+if "%APP%"=="" (
+    echo.
+    echo   No deployment found in resource group %RG%.
+    echo   Run 'devclaw up' first.
+    echo.
+    exit /b 0
+)
 for /f "tokens=*" %%a in ('az containerapp revision list --name %APP% --resource-group %RG% --query "[?properties.active].properties.runningState" -o tsv 2^>nul') do set "STATUS=%%a"
 for /f "tokens=*" %%a in ('az containerapp show --name %APP% --resource-group %RG% --query "properties.configuration.ingress.fqdn" -o tsv 2^>nul') do set "FQDN=%%a"
+if "%STATUS%"=="" set "STATUS=Unknown"
 echo.
 echo   devclaw
 echo   --------
 echo   App:     %APP%
 echo   Status:  %STATUS%
+if "%FQDN%"=="" (
+echo   URL:     (not available)
+) else (
 echo   URL:     https://%FQDN%
+)
 echo   RG:      %RG%
 echo.
 exit /b 0
@@ -148,14 +171,31 @@ call az containerapp logs show --name %APP% --resource-group %RG% --follow --tai
 exit /b 0
 
 :test
+set "RG="
+set "APP="
+set "STATUS="
 for /f "tokens=*" %%a in ('azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "RG=%%a"
+if "%RG%"=="" (
+    echo.
+    echo   Container: Not deployed - run 'devclaw up' first.
+    echo.
+    exit /b 0
+)
 for /f "tokens=*" %%a in ('az containerapp list --resource-group %RG% --query "[0].name" -o tsv 2^>nul') do set "APP=%%a"
+if "%APP%"=="" (
+    echo.
+    echo   Container: Not deployed - run 'devclaw up' first.
+    echo.
+    exit /b 0
+)
 for /f "tokens=*" %%a in ('az containerapp revision list --name %APP% --resource-group %RG% --query "[?properties.active].properties.runningState" -o tsv 2^>nul') do set "STATUS=%%a"
 echo.
 if "%STATUS%"=="Running" (
     echo   Container: Running
 ) else if "%STATUS%"=="RunningAtMaxScale" (
     echo   Container: Running
+) else if "%STATUS%"=="" (
+    echo   Container: Unknown - no active revision reported
 ) else (
     echo   Container: %STATUS% - wait or check 'devclaw logs'
 )
@@ -263,6 +303,199 @@ echo   Install in Teams:
 echo     Teams ^> Apps ^> Manage your apps ^> Upload a custom app
 echo     Select: teams\openclaw-teams-app.zip
 echo     Add ^> DM the bot to test
+echo.
+exit /b 0
+
+:sandbox
+set "SUBCOMMAND=%2"
+if "%SUBCOMMAND%"=="" set "SUBCOMMAND=status"
+set "SANDBOX_DIR=%~dp0_local\sandbox"
+if /i "%SUBCOMMAND%"=="build" (
+    if "%3" NEQ "" set "SANDBOX_DIR=%3"
+) else if /i "%SUBCOMMAND%"=="status" (
+    if "%3" NEQ "" set "SANDBOX_DIR=%3"
+)
+set "SANDBOX_METADATA=%SANDBOX_DIR%\disk-image-metadata.json"
+
+if /i "%SUBCOMMAND%"=="init" goto :sandbox_init
+if /i "%SUBCOMMAND%"=="build" goto :sandbox_build
+if /i "%SUBCOMMAND%"=="upload" goto :sandbox_upload
+if /i "%SUBCOMMAND%"=="delete" goto :sandbox_delete
+if /i "%SUBCOMMAND%"=="status" goto :sandbox_status
+goto :sandbox_help
+
+:sandbox_init
+set "SQUAD_NAME=%3"
+if "%SQUAD_NAME%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME=%%i"
+if "%SQUAD_NAME%"=="" set "SQUAD_NAME=core"
+set "SANDBOX_REGION=%4"
+if "%SANDBOX_REGION%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "SANDBOX_REGION=%%i"
+if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=eastus2"
+set "SANDBOX_OPENAI_REGION=%5"
+if "%SANDBOX_OPENAI_REGION%"=="" set "SANDBOX_OPENAI_REGION=%SANDBOX_REGION%"
+
+echo.
+echo   Initializing Sandbox workspace...
+if not exist "%SANDBOX_DIR%" mkdir "%SANDBOX_DIR%"
+call azd env set SQUAD_NAME "%SQUAD_NAME%" >nul 2>&1
+call azd env set ACA_SANDBOX_MODE sandbox >nul 2>&1
+call azd env set AZURE_LOCATION "%SANDBOX_REGION%" >nul 2>&1
+call azd env set AZURE_OPENAI_LOCATION "%SANDBOX_OPENAI_REGION%" >nul 2>&1
+call azd env set SANDBOX_DIR "%SANDBOX_DIR%" >nul 2>&1
+echo   Sandbox workspace ready at %SANDBOX_DIR%.
+echo   Run 'devclaw sandbox build %SANDBOX_DIR%' to generate the disk artifact.
+echo.
+exit /b 0
+
+:sandbox_build
+set "SANDBOX_FORMAT=%4"
+if "%SANDBOX_FORMAT%"=="" set "SANDBOX_FORMAT=vhdx"
+for /f "tokens=*" %%i in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "AZ_LOC=%%i"
+if "%AZ_LOC%"=="" set "AZ_LOC=eastus2"
+set "SANDBOX_REGION=%5"
+if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=%AZ_LOC%"
+for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME_FROM_ENV=%%i"
+if "%SQUAD_NAME_FROM_ENV%"=="" set "SQUAD_NAME_FROM_ENV=core"
+set "SANDBOX_SQUAD=%6"
+if "%SANDBOX_SQUAD%"=="" set "SANDBOX_SQUAD=%SQUAD_NAME_FROM_ENV%"
+
+echo.
+echo   Building Sandbox disk artifact...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build-disk-image.ps1" -OutputDir "%SANDBOX_DIR%" -DiskFormat "%SANDBOX_FORMAT%" -Region "%SANDBOX_REGION%" -Squad "%SANDBOX_SQUAD%"
+if errorlevel 1 exit /b 1
+
+if exist "%SANDBOX_METADATA%" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).artifact_path"`) do set "DISK_PATH=%%i"
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).hash_sha256"`) do set "DISK_HASH=%%i"
+    if not "%DISK_PATH%"=="" call azd env set SANDBOX_DISK_IMAGE_PATH "%DISK_PATH%" >nul 2>&1
+    if not "%DISK_HASH%"=="" call azd env set SANDBOX_DISK_IMAGE_HASH "%DISK_HASH%" >nul 2>&1
+    echo   Sandbox metadata captured in azd env (SANDBOX_DISK_IMAGE_PATH/HASH).
+)
+echo.
+exit /b 0
+
+:sandbox_upload
+set "SQUAD_NAME=%3"
+if "%SQUAD_NAME%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME=%%i"
+if "%SQUAD_NAME%"=="" set "SQUAD_NAME=core"
+set "SANDBOX_REGION=%4"
+if "%SANDBOX_REGION%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "SANDBOX_REGION=%%i"
+if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=eastus2"
+set "SANDBOX_DISK_PATH=%5"
+set "SANDBOX_RG=%6"
+if "%SANDBOX_RG%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "SANDBOX_RG=%%i"
+if "%SANDBOX_RG%"=="" (
+    for /f "tokens=*" %%i in ('call azd env get-value AZURE_ENV_NAME 2^>nul') do set "AZD_ENV_NAME=%%i"
+    if "%AZD_ENV_NAME%"=="" set "AZD_ENV_NAME=%SQUAD_NAME%"
+    set "SANDBOX_RG=rg-%AZD_ENV_NAME%"
+)
+set "SANDBOX_EMAIL=%7"
+if "%SANDBOX_EMAIL%"=="" for /f "tokens=*" %%i in ('az account show --query user.name -o tsv 2^>nul') do set "SANDBOX_EMAIL=%%i"
+set "SANDBOX_GROUP=sg-%SQUAD_NAME%"
+
+if "%SANDBOX_DISK_PATH%"=="" if exist "%SANDBOX_METADATA%" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).artifact_path"`) do set "SANDBOX_DISK_PATH=%%i"
+)
+if "%SANDBOX_DISK_PATH%"=="" (
+    echo.
+    echo   No sandbox disk artifact found.
+    echo   Run 'devclaw sandbox build %SANDBOX_DIR%' first or pass a disk path.
+    echo.
+    exit /b 1
+)
+for %%i in ("%SANDBOX_DISK_PATH%") do set "SANDBOX_DISK_NAME=%%~nxi"
+
+where aca >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   aca CLI not found.
+    echo   Install it first, then run:
+    echo     az group create --name "%SANDBOX_RG%" --location "%SANDBOX_REGION%"
+    echo     aca sandboxgroup create -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --location "%SANDBOX_REGION%" --set-config
+    echo     aca sandboxgroup identity assign --group "%SANDBOX_GROUP%" --system-assigned
+    echo     aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
+    if not "%SANDBOX_EMAIL%"=="" echo     aca sandbox port add --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% --port 18789 --email "%SANDBOX_EMAIL%"
+    echo.
+    exit /b 1
+)
+
+echo.
+echo   Registering Sandbox artifact with ACA Sandbox...
+call az group create --name "%SANDBOX_RG%" --location "%SANDBOX_REGION%" >nul
+call aca sandboxgroup create -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --location "%SANDBOX_REGION%" --set-config
+call aca sandboxgroup identity assign --group "%SANDBOX_GROUP%" --system-assigned
+call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
+if not "%SANDBOX_EMAIL%"=="" call aca sandbox port add --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% --port 18789 --email "%SANDBOX_EMAIL%"
+call aca sandbox get --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME%
+call azd env set SANDBOX_DISK_IMAGE_PATH "%SANDBOX_DISK_PATH%" >nul 2>&1
+echo   Sandbox upload complete for %SQUAD_NAME%.
+echo.
+exit /b 0
+
+:sandbox_delete
+set "SQUAD_NAME=%3"
+if "%SQUAD_NAME%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME=%%i"
+if "%SQUAD_NAME%"=="" set "SQUAD_NAME=core"
+set "SANDBOX_RG=%4"
+if "%SANDBOX_RG%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "SANDBOX_RG=%%i"
+if "%SANDBOX_RG%"=="" (
+    for /f "tokens=*" %%i in ('call azd env get-value AZURE_ENV_NAME 2^>nul') do set "AZD_ENV_NAME=%%i"
+    if "%AZD_ENV_NAME%"=="" set "AZD_ENV_NAME=%SQUAD_NAME%"
+    set "SANDBOX_RG=rg-%AZD_ENV_NAME%"
+)
+set "SANDBOX_GROUP=sg-%SQUAD_NAME%"
+
+where aca >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   aca CLI not found.
+    echo   To delete the sandbox manually:
+    echo     aca sandbox delete -l app=openclaw,env=%SQUAD_NAME% --yes
+    echo     aca sandboxgroup delete -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --yes
+    echo.
+    exit /b 1
+)
+
+echo.
+echo   Deleting Sandbox resources...
+call aca sandbox delete -l app=openclaw,env=%SQUAD_NAME% --yes
+call aca sandboxgroup delete -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --yes
+echo   Sandbox deleted for %SQUAD_NAME%.
+echo.
+exit /b 0
+
+:sandbox_status
+echo.
+where aca >nul 2>&1
+if not errorlevel 1 (
+    set "SQUAD_NAME=%3"
+    if "%SQUAD_NAME%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME=%%i"
+    if "%SQUAD_NAME%"=="" set "SQUAD_NAME=core"
+    set "SANDBOX_GROUP=sg-%SQUAD_NAME%"
+    call aca sandbox get --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% 2>nul
+    echo.
+)
+if not exist "%SANDBOX_METADATA%" (
+    echo   No sandbox metadata found at:
+    echo     %SANDBOX_METADATA%
+    echo   Run: devclaw sandbox build
+    echo.
+    exit /b 0
+)
+type "%SANDBOX_METADATA%"
+echo.
+exit /b 0
+
+:sandbox_help
+echo.
+echo   devclaw sandbox
+echo.
+echo   Subcommands:
+echo     devclaw sandbox init ^<squad^> [region] [openai-region]   Create local Sandbox workspace
+echo     devclaw sandbox build [dir] [format] [region] [squad]
+echo     devclaw sandbox upload ^<squad^> [region] [disk-path] [rg] [email]
+echo     devclaw sandbox delete ^<squad^> [region] [rg]
+echo     devclaw sandbox status [dir]
 echo.
 exit /b 0
 
@@ -441,6 +674,9 @@ echo     devclaw test       Verify it's working
 echo.
 echo   Channels:
 echo     devclaw teams      Add Microsoft Teams integration (optional add-on)
+echo.
+echo   Sandbox:
+echo     devclaw sandbox    Build/show Sandbox disk artifact metadata
 echo.
 echo   Multi-squad:
 echo     devclaw squad      Manage independent squads (run 'devclaw squad' for help)

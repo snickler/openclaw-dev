@@ -82,11 +82,11 @@ The team has chosen **Option B: Automated disk image builder** (Decision D-025, 
 
 | Phase | Duration | Status | Owner | Deliverables |
 |-------|----------|--------|-------|--------------|
-| **1 – MVP** | 1–2 weeks | Backlog | TBD (Bishop/Hicks candidate) | `build-disk-image.sh`/`.ps1`, devclaw sandbox init/upload (manual) |
+| **1 – MVP** | 1–2 weeks | Backlog | TBD (Bishop/Hicks candidate) | `build-disk-image.sh`/`.ps1`, `devclaw sandbox init/upload/status/delete` |
 | **2 – Auto-build** | 2–4 weeks | Backlog | TBD | Automated rebuild on deps; ACA integration |
-| **3 – CI/CD** | 4–8 weeks | Backlog | TBD | GitHub Actions, artifact signing, multi-region distribution |
+| **3 – CI/CD** | 4–8 weeks | In progress | TBD | GitHub Actions, artifact signing, multi-region distribution |
 
-**Blocker:** ACA Sandbox API must reach stable GA (not preview) before Phase 2 rollout.
+**Risk accepted:** ACA Sandbox API is still preview, so Phase 3 automation proceeds with the current CLI surface and may need refreshes if the API changes.
 
 **For now (Phase 1 in progress):** Users without a pre-built disk can use standard Container Apps:
 
@@ -138,6 +138,8 @@ This deploys to standard Container Apps (stateful, Easy Auth + Teams support) in
 | `OPENCLAW_MIN_REPLICAS` | no | `1` | Minimum ACA replicas for the OpenClaw runtime |
 | `OPENCLAW_MAX_REPLICAS` | no | `3` | Maximum ACA replicas for the OpenClaw runtime (must be >= min) |
 | `ACA_SANDBOX_MODE` | no | `sandbox` | Host mode selector: `sandbox` (default) for ACA Sandbox (requires custom Node.js disk image provisioning); `standard` (legacy) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`). For Sandbox mode, see "Disk image provisioning" below; disk must be pre-built and registered with ACA Sandbox. |
+| `SANDBOX_DISK_NAME` | no | unset | Optional phase 1/2 input for sandbox runtime disk label/name. Keep empty for standard mode or when disk is provisioned externally. |
+| `SANDBOX_DISK_SNAPSHOT_ID` | no | unset | Optional phase 1/2 input for sandbox disk snapshot resource ID (used to carry disk contract through Bicep while ACA Sandbox APIs are still maturing). |
 | `USE_EXPRESS_ENV` | no | `false` | When set to `true`, Container Apps environment is created in Express mode (preview) for faster cold-start (~10–20s vs. ~30–60s). Only applicable when `ACA_SANDBOX_MODE=standard`. Supported regions include East Asia and West Central US. Express mode disables storage mounts, so session state does not persist across replica restarts. |
 | `SKIP_STORAGE` | no | `false` | Set to `true` if Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Skips the storage account, file share, and volume mount. Trade-off: gateway token + sessions don't persist across replica restarts. |
 | `SERVICE_MANAGEMENT_REFERENCE` | no | unset | Set to a service-management-reference GUID if your tenant requires `serviceManagementReference` on every new app registration (common on large corporate tenants). The preprovision hook passes it to `az ad app create` for both the Easy Auth and the Bot app registrations. |

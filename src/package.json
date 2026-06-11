@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-auth-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@azure/identity": "4.13.1",
+    "http-proxy": "1.18.1"
+  }
+}

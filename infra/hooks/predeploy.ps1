@@ -11,6 +11,71 @@ $acrName = (azd env get-value AZURE_CONTAINER_REGISTRY_NAME 2>$null)
 if (-not $acrName) {
     $acrName = az acr list -g $rg --query "[0].name" -o tsv 2>$null
 }
+
+$rootDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$sandboxDir = Join-Path $rootDir "_local\sandbox"
+$sandboxMetadata = Join-Path $sandboxDir "disk-image-metadata.json"
+$sandboxMode = (azd env get-value ACA_SANDBOX_MODE 2>$null)
+if (-not $sandboxMode) { $sandboxMode = "sandbox" }
+$sandboxAutoBuild = (azd env get-value SANDBOX_AUTO_BUILD 2>$null)
+if (-not $sandboxAutoBuild) { $sandboxAutoBuild = "true" }
+$sandboxRegion = (azd env get-value AZURE_LOCATION 2>$null)
+if (-not $sandboxRegion) { $sandboxRegion = "eastus2" }
+$sandboxSquad = (azd env get-value SQUAD_NAME 2>$null)
+if (-not $sandboxSquad) { $sandboxSquad = "core" }
+
+function Test-SandboxMetadata {
+    if (-not (Test-Path $sandboxMetadata)) {
+        return $false
+    }
+
+    try {
+        $metadata = Get-Content $sandboxMetadata -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "[predeploy] Sandbox metadata file is not valid JSON."
+        return $false
+    }
+
+    if (-not $metadata.artifact_path -or -not $metadata.hash_sha256 -or -not (Test-Path $metadata.artifact_path)) {
+        Write-Host "[predeploy] Sandbox metadata missing artifact_path/hash_sha256 or artifact file."
+        return $false
+    }
+
+    $actualHash = (Get-FileHash -Path $metadata.artifact_path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expectedHash = "$($metadata.hash_sha256)".ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        Write-Host "[predeploy] ERROR: Sandbox artifact hash mismatch."
+        return $false
+    }
+
+    if (-not $metadata.git_commit) {
+        Write-Host "[predeploy] Sandbox metadata missing git_commit."
+        return $false
+    }
+
+    azd env set SANDBOX_DISK_IMAGE_PATH $metadata.artifact_path *> $null
+    azd env set SANDBOX_DISK_IMAGE_HASH $expectedHash *> $null
+    Write-Host "[predeploy] Disk image validated (commit $($metadata.git_commit.Substring(0, [Math]::Min(8, $metadata.git_commit.Length))))"
+    return $true
+}
+
+if ($sandboxMode.ToLowerInvariant() -eq "sandbox") {
+    $verified = Test-SandboxMetadata
+    if (-not $verified) {
+        if ($sandboxAutoBuild.ToLowerInvariant() -eq "true") {
+            Write-Host "[predeploy] SANDBOX_AUTO_BUILD=true and metadata missing/invalid — building now."
+            & (Join-Path $rootDir "scripts\build-disk-image.ps1") -OutputDir $sandboxDir -DiskFormat "vhdx" -Region $sandboxRegion -Squad $sandboxSquad
+            if (-not (Test-SandboxMetadata)) {
+                Write-Host "[predeploy] ERROR: Auto-build completed but sandbox metadata is still invalid."
+                exit 1
+            }
+        } else {
+            Write-Host "[predeploy] Sandbox mode enabled but no verified local disk metadata found."
+            Write-Host "[predeploy] Auto-build is disabled. To re-enable:"
+            Write-Host "[predeploy]   azd env set SANDBOX_AUTO_BUILD true"
+        }
+    }
+}
 if (-not $acrName) {
     Write-Host "[predeploy] No ACR found — skipping Docker Hub credential setup"
     exit 0

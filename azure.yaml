@@ -27,7 +27,7 @@ hooks:
     posix:
       shell: sh
       run: ./infra/hooks/predeploy.sh
-    continueOnError: true
+    continueOnError: false
   postdeploy:
     windows:
       shell: pwsh

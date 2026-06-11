@@ -51,6 +51,12 @@ param containerImage string = ''
 @description('Host mode selector: "sandbox" (default) for ACA Sandbox (requires custom disk image provisioning), or "standard" for legacy Azure Container Apps with optional Express mode cold-start. See SKILL.md for details.')
 param acaSandboxMode string = 'sandbox'
 
+@description('ACA Sandbox runtime disk label/name. Optional in phase 1/2 while disk wiring is preprovisioned externally.')
+param sandboxDiskName string = ''
+
+@description('ACA Sandbox disk snapshot resource ID. Optional in phase 1/2 while sandbox disk APIs remain preview.')
+param sandboxDiskSnapshotId string = ''
+
 @description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled.')
 param useExpressEnv string = 'false'
 
@@ -69,7 +75,24 @@ var storageSkipped = toLower(skipStorage) == 'true'
 @description('Region for the Azure OpenAI account. Defaults to `location`. Override (via AZURE_OPENAI_LOCATION) when the chosen `location` does not offer the target model SKU (e.g. ACA in `eastasia` with OpenAI in `eastus2`).')
 param openaiLocation string = ''
 
+@description('Logical squad name used for tags/state isolation and multi-squad fleet naming (set via SQUAD_NAME).')
+param squadName string = 'core'
+
+@description('Numeric squad instance identifier (set via SQUAD_INSTANCE). Use distinct values per squad deployment.')
+param squadInstance string = '1'
+
+@description('Minimum ACA replicas for the OpenClaw runtime (set via OPENCLAW_MIN_REPLICAS).')
+param openclawMinReplicas string = '1'
+
+@description('Maximum ACA replicas for the OpenClaw runtime (set via OPENCLAW_MAX_REPLICAS).')
+param openclawMaxReplicas string = '3'
+
 var effectiveOpenaiLocation = empty(openaiLocation) ? location : openaiLocation
+var normalizedSquadName = toLower(replace(replace(replace(trim(squadName), '_', '-'), ' ', '-'), '.', '-'))
+var effectiveSquadName = empty(normalizedSquadName) ? 'core' : normalizedSquadName
+var effectiveSquadInstance = max(1, int(squadInstance))
+var effectiveMinReplicas = max(0, int(openclawMinReplicas))
+var effectiveMaxReplicas = max(effectiveMinReplicas, int(openclawMaxReplicas))
 
 // ---------------------------------------------------------------------------
 // 1. AI model — deployed to Azure OpenAI / Microsoft Foundry Models (OpenAI-compatible API)
@@ -108,8 +131,15 @@ module host 'aca.bicep' = {
     botTenantId: botTenantId
     easyAuthAppId: easyAuthAppId
     containerImage: containerImage
+    acaSandboxMode: normalizedSandboxMode
+    sandboxDiskName: sandboxDiskName
+    sandboxDiskSnapshotId: sandboxDiskSnapshotId
     useExpressEnv: expressEnabled
     skipStorage: storageSkipped
+    squadName: effectiveSquadName
+    squadInstance: effectiveSquadInstance
+    minReplicas: effectiveMinReplicas
+    maxReplicas: effectiveMaxReplicas
   }
 }
 
@@ -124,3 +154,8 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = host.outputs.AZURE_CONTAINER_R
 output AZURE_CONTAINER_REGISTRY_NAME string = host.outputs.AZURE_CONTAINER_REGISTRY_NAME
 output HOST_FQDN string = host.outputs.HOST_FQDN
 output BOT_APP_ID string = host.outputs.BOT_APP_ID
+output ACA_SANDBOX_MODE string = host.outputs.ACA_SANDBOX_MODE
+output SANDBOX_DISK_NAME string = host.outputs.SANDBOX_DISK_NAME
+output SANDBOX_DISK_SNAPSHOT_ID string = host.outputs.SANDBOX_DISK_SNAPSHOT_ID
+output SQUAD_NAME string = effectiveSquadName
+output SQUAD_INSTANCE int = effectiveSquadInstance

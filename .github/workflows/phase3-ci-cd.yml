@@ -1,0 +1,201 @@
+name: Phase 3 CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_sandbox_image:
+        description: Build the Sandbox disk artifact
+        required: false
+        default: true
+        type: boolean
+      sign_artifacts:
+        description: Sign the sandbox metadata bundle
+        required: false
+        default: true
+        type: boolean
+      target_regions:
+        description: Comma-separated distribution regions
+        required: false
+        default: eastus2,westcentralus
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - devclaw
+      - devclaw.cmd
+      - scripts/**
+      - src/**
+      - infra/**
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install sandbox build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y qemu-utils
+
+      - name: Install auth runtime dependencies
+        working-directory: src
+        run: npm ci --omit=dev
+
+      - name: Syntax-check shell scripts
+        run: |
+          bash -n ./devclaw
+          bash -n ./scripts/build-disk-image.sh
+
+      - name: Syntax-check PowerShell scripts
+        shell: pwsh
+        run: |
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./infra/hooks/predeploy.ps1), [ref]$null, [ref]$null)
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./scripts/build-disk-image.ps1), [ref]$null, [ref]$null)
+
+      - name: Run static smoke checks
+        shell: pwsh
+        run: .\scripts\qa\phase12-smoke.ps1 -Mode Static -NoFileReport
+
+  prepare-regions:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.regions.outputs.matrix }}
+
+    steps:
+      - name: Derive region matrix
+        id: regions
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          regions = [r.strip() for r in os.environ["TARGET_REGIONS"].split(",") if r.strip()]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"matrix={json.dumps({'region': regions})}\n")
+          PY
+        env:
+          TARGET_REGIONS: ${{ inputs.target_regions }}
+
+  build-and-sign:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install qemu utilities
+        run: sudo apt-get update && sudo apt-get install -y qemu-utils
+
+      - name: Build sandbox artifact
+        run: bash ./scripts/build-disk-image.sh ./_local/sandbox qcow2 eastus2 core
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign sandbox metadata
+        if: inputs.sign_artifacts
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign-blob --yes \
+            --output-signature ./_local/sandbox/disk-image-metadata.sig \
+            --output-certificate ./_local/sandbox/disk-image-metadata.pem \
+            ./_local/sandbox/disk-image-metadata.json
+
+      - name: Build distribution manifest
+        env:
+          TARGET_REGIONS: ${{ inputs.target_regions }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          targets = [r.strip() for r in os.environ["TARGET_REGIONS"].split(",") if r.strip()]
+          payload = {
+              "artifact": "_local/sandbox/disk-image-metadata.json",
+              "signature": "_local/sandbox/disk-image-metadata.sig",
+              "certificate": "_local/sandbox/disk-image-metadata.pem",
+              "targets": targets,
+          }
+          pathlib.Path("./_local/sandbox/phase3-distribution.json").write_text(
+              json.dumps(payload, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload signed sandbox bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-signed-bundle
+          path: |
+            ./_local/sandbox/disk-image-metadata.json
+            ./_local/sandbox/disk-image-metadata.sig
+            ./_local/sandbox/disk-image-metadata.pem
+            ./_local/sandbox/phase3-distribution.json
+
+  distribute:
+    needs:
+      - build-and-sign
+      - prepare-regions
+    if: github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-regions.outputs.matrix) }}
+
+    steps:
+      - name: Download signed bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-signed-bundle
+          path: ./bundle
+
+      - name: Stage region bundle
+        shell: bash
+        run: |
+          mkdir -p "./dist/${{ matrix.region }}"
+          cp ./bundle/disk-image-metadata.json "./dist/${{ matrix.region }}/"
+          cp ./bundle/disk-image-metadata.sig "./dist/${{ matrix.region }}/"
+          cp ./bundle/disk-image-metadata.pem "./dist/${{ matrix.region }}/"
+          cp ./bundle/phase3-distribution.json "./dist/${{ matrix.region }}/"
+          echo "Staged bundle for region: ${{ matrix.region }}"
+
+      - name: Upload regional bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-bundle-${{ matrix.region }}
+          path: ./dist/${{ matrix.region }}
+
+      - name: Azure login
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Publish region bundle to Azure Blob
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != '' }}
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az storage blob upload-batch \
+              --account-name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
+              --destination "${{ secrets.AZURE_STORAGE_CONTAINER }}/sandbox/${{ matrix.region }}" \
+              --source "./dist/${{ matrix.region }}" \
+              --overwrite

@@ -155,6 +155,30 @@
 - **Source:**
   - `decisions/inbox/Vasquez-final-rubber-duck-hardening-batch-is-release-ready.md`
 
+### 2026-06-11 — D-022 Sandbox predeploy auto-build defaults on for Phase 2
+- **Status:** Implemented
+- **Decider:** Ripley
+- **Decision:** When ACA Sandbox mode is active, `predeploy` now auto-builds a missing or invalid sandbox disk by default and blocks `devclaw up` until the artifact validates; `SANDBOX_AUTO_BUILD=false` is a temporary escape hatch only.
+- **Source:**
+  - `infra/hooks/predeploy.ps1`
+  - `infra/hooks/predeploy.sh`
+
+### 2026-06-11 — D-023 Sandbox CLI registration wrappers implemented
+- **Status:** Implemented
+- **Decider:** Hicks
+- **Decision:** Extend `devclaw sandbox` with `init`, `upload`, and `delete` wrappers so the documented ACA Sandbox registration flow is reachable through the repo’s single entrypoint on Windows and bash.
+- **Source:**
+  - `devclaw`
+  - `devclaw.cmd`
+
+### 2026-06-11 — D-024 Accept ACA Sandbox preview risk for Phase 3
+- **Status:** Accepted-risk
+- **Decider:** Ripley
+- **Decision:** Proceed with Phase 3 CI/CD work even though ACA Sandbox remains preview; treat API churn as an accepted delivery risk and keep the new workflow scaffolded around the current CLI surface.
+- **Source:**
+  - `https://learn.microsoft.com/en-us/azure/container-apps/sandboxes-overview`
+  - `https://sandboxes.azure.com/docs/sandboxes/quickstart/setup-cli`
+
 ## Governance
 
 - All meaningful changes require team consensus

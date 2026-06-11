@@ -35,6 +35,15 @@ param easyAuthAppId string = ''
 @description('Container image to deploy. azd populates this from SERVICE_OPENCLAW_IMAGE_NAME after the first `azd deploy`; empty on first provision so a placeholder is used.')
 param containerImage string = ''
 
+@description('Host mode selector (`sandbox` default, `standard` legacy).')
+param acaSandboxMode string = 'sandbox'
+
+@description('ACA Sandbox runtime disk label/name (phase 1/2 contract input).')
+param sandboxDiskName string = ''
+
+@description('ACA Sandbox disk snapshot resource ID (phase 1/2 contract input).')
+param sandboxDiskSnapshotId string = ''
+
 @description('When true, skip the storage account + Azure Files volume mount. Use on subscriptions where Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Set SKIP_STORAGE=true in your azd env. Trade-off: gateway token + sessions do not persist across replica restarts.')
 param skipStorage bool = false
 
@@ -61,11 +70,14 @@ var squadKey = '${effectiveSquadName}-${effectiveSquadInstance}'
 var effectiveMinReplicas = max(0, minReplicas)
 var effectiveMaxReplicas = max(effectiveMinReplicas, maxReplicas)
 var stateShareName = take('openclaw-${effectiveSquadName}-${effectiveSquadInstance}-state', 63)
+var normalizedSandboxMode = toLower(trim(acaSandboxMode))
+var sandboxModeEnabled = normalizedSandboxMode == 'sandbox'
+var sandboxDiskConfigured = !empty(sandboxDiskSnapshotId) || !empty(sandboxDiskName)
 
 // Storage is mounted via Azure Files when both standard env mode and the
 // shared-key-allowed storage account are in play. Express mode and the
 // SKIP_STORAGE escape hatch both turn it off.
-var storageEnabled = !useExpressEnv && !skipStorage
+var storageEnabled = !sandboxModeEnabled && !useExpressEnv && !skipStorage
 
 // Build the container `secrets` array conditionally so we never emit an empty
 // `msteams-app-password` secret value (which ACA rejects) when Teams is off.
@@ -107,6 +119,14 @@ var baseEnv = [
   {
     name: 'OPENCLAW_SQUAD_KEY'
     value: squadKey
+  }
+  {
+    name: 'OPENCLAW_HOST_MODE'
+    value: normalizedSandboxMode
+  }
+  {
+    name: 'OPENCLAW_SANDBOX_DISK_CONFIGURED'
+    value: string(sandboxDiskConfigured)
   }
 ]
 var teamsEnv = teamsEnabled ? [
@@ -431,6 +451,9 @@ output AZURE_CONTAINER_REGISTRY_NAME string = acr.name
 // (e.g. AKS, App Service) without updating callers or azd env consumers.
 output HOST_FQDN string = containerApp.properties.configuration.ingress.fqdn
 output HOST_NAME string = containerApp.name
+output ACA_SANDBOX_MODE string = normalizedSandboxMode
+output SANDBOX_DISK_NAME string = sandboxDiskName
+output SANDBOX_DISK_SNAPSHOT_ID string = sandboxDiskSnapshotId
 
 // ---------------------------------------------------------------------------
 // Azure Bot Service (optional — only deployed if botAppId is provided)

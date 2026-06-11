@@ -60,21 +60,30 @@ cd openclaw-dev
 **Option A (Recommended for now): Document required steps**
 Users should provision their own Node.js disk image (24 GB with Node.js, npm, and auth-proxy installed), snap it, then register with ACA Sandbox. The Bicep template will reference that disk.
 
-**Option B (Future): Build and snap Node.js disk image**
-We could add a `build-disk-image.sh` script in the repo to bake a full Node.js + auth-proxy image, snap it, and register it automatically.
+**Option B (Phase 1 in repo): Build local Sandbox disk artifact + metadata**
+This repo now includes:
+- `scripts/build-disk-image.sh` (Linux/macOS) and `scripts/build-disk-image.ps1` (Windows)
+- `devclaw sandbox init`, `build`, `upload`, `status`, and `delete`
+- Metadata output at `_local/sandbox/disk-image-metadata.json` with SHA256 hash + audit trail fields
+
+Phase 2 predeploy integration auto-builds by default:
+
+```bash
+devclaw up
+```
+
+When `ACA_SANDBOX_MODE=sandbox` and metadata is missing, the predeploy hook auto-runs the build script and verifies the artifact hash before deploy. Set `SANDBOX_AUTO_BUILD=false` only if you need to suppress that behavior temporarily.
 
 **Option C (Future): Use bootstrap on `aca sandbox exec` post-boot**
 After a plain Linux boot, use `aca sandbox exec` to install Node.js and start the auth-proxy dynamically.
 
-**For now, use Option A:** If you have a pre-built Node.js disk image, you can use ACA Sandbox isolation by running:
+**Sandbox registration step:** Once you have a disk image/snapshot, register it with ACA Sandbox:
 
 ```bash
-aca -s <sub> -g <rg> sandboxgroup create --name sg-<env> --location <region> --set-config
-aca sandboxgroup identity assign --group sg-<env> --system-assigned
-aca sandbox create --group sg-<env> --disk node-24 --label app=openclaw --label env=<env>
-aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --email <you@tenant>
-aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
+devclaw sandbox upload my-squad
 ```
+
+This wraps the documented `aca sandboxgroup` / `aca sandbox create` flow and prints the equivalent manual commands if `aca` is not installed yet.
 
 **Fallback to standard ACA:** If you don't have a custom disk image yet, you can revert to standard Container Apps (storage-persistent, no disk provisioning needed):
 
@@ -109,6 +118,12 @@ devclaw logs     # Tail logs until you see `[gateway] starting HTTP server`
 ```
 
 `devclaw test` only prints a hint that points you at the in-container console. It does not exercise the model end-to-end. The fastest real smoke test is the WebChat UI below.
+
+For Phase 1-2 sandbox QA checks (smoke + fallback/regression assertions), run:
+
+```powershell
+.\scripts\qa\phase12-smoke.ps1 -Mode All
+```
 
 ### Open the WebChat UI
 

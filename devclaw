@@ -211,6 +211,160 @@ squad)
     exit 0
     ;;
 
+sandbox)
+    SUBCOMMAND="${2:-status}"
+    case "$SUBCOMMAND" in
+    build|status)
+        SANDBOX_DIR="${3:-$ROOT/_local/sandbox}"
+        ;;
+    *)
+        SANDBOX_DIR="$ROOT/_local/sandbox"
+        ;;
+    esac
+    SANDBOX_METADATA="$SANDBOX_DIR/disk-image-metadata.json"
+
+    case "$SUBCOMMAND" in
+    init)
+        SANDBOX_SQUAD="${3:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
+        SANDBOX_REGION="${4:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
+        SANDBOX_OPENAI_REGION="${5:-$SANDBOX_REGION}"
+
+        echo ""
+        echo -e "  ${C}Initializing Sandbox workspace...${N}"
+        mkdir -p "$SANDBOX_DIR"
+        azd env set SQUAD_NAME "$SANDBOX_SQUAD" >/dev/null 2>&1 || true
+        azd env set ACA_SANDBOX_MODE sandbox >/dev/null 2>&1 || true
+        azd env set AZURE_LOCATION "$SANDBOX_REGION" >/dev/null 2>&1 || true
+        azd env set AZURE_OPENAI_LOCATION "$SANDBOX_OPENAI_REGION" >/dev/null 2>&1 || true
+        azd env set SANDBOX_DIR "$SANDBOX_DIR" >/dev/null 2>&1 || true
+        echo -e "  ${G}Sandbox workspace ready at ${SANDBOX_DIR}.${N}"
+        echo -e "  ${D}Run 'devclaw sandbox build ${SANDBOX_DIR}' to generate the disk artifact.${N}"
+        echo ""
+        ;;
+    build)
+        SANDBOX_FORMAT="${4:-qcow2}"
+        SANDBOX_REGION="${5:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
+        SANDBOX_SQUAD="${6:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
+
+        echo ""
+        echo -e "  ${C}Building Sandbox disk artifact...${N}"
+        bash "$ROOT/scripts/build-disk-image.sh" "$SANDBOX_DIR" "$SANDBOX_FORMAT" "$SANDBOX_REGION" "$SANDBOX_SQUAD"
+
+        if [ -f "$SANDBOX_METADATA" ]; then
+            DISK_PATH=$(awk -F'"' '/"artifact_path"/ {print $4}' "$SANDBOX_METADATA")
+            DISK_HASH=$(awk -F'"' '/"hash_sha256"/ {print $4}' "$SANDBOX_METADATA")
+            [ -n "$DISK_PATH" ] && azd env set SANDBOX_DISK_IMAGE_PATH "$DISK_PATH" >/dev/null 2>&1 || true
+            [ -n "$DISK_HASH" ] && azd env set SANDBOX_DISK_IMAGE_HASH "$DISK_HASH" >/dev/null 2>&1 || true
+            echo -e "  ${G}Sandbox metadata captured in azd env (SANDBOX_DISK_IMAGE_PATH/HASH).${N}"
+        fi
+        echo ""
+        ;;
+    upload)
+        SANDBOX_SQUAD="${3:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
+        SANDBOX_REGION="${4:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
+        SANDBOX_DISK_PATH="${5:-}"
+        SANDBOX_RG="${6:-$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo rg-$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo $SANDBOX_SQUAD))}"
+        SANDBOX_EMAIL="${7:-$(az account show --query user.name -o tsv 2>/dev/null || echo "")}"
+        SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
+
+        if [ -z "$SANDBOX_DISK_PATH" ] && [ -f "$SANDBOX_METADATA" ]; then
+            SANDBOX_DISK_PATH=$(awk -F'"' '/"artifact_path"/ {print $4}' "$SANDBOX_METADATA")
+        fi
+        if [ -z "$SANDBOX_DISK_PATH" ]; then
+            echo ""
+            echo -e "  ${R}No sandbox disk artifact found.${N}"
+            echo -e "  ${D}Run 'devclaw sandbox build ${SANDBOX_DIR}' first or pass a disk path.${N}"
+            echo ""
+            exit 1
+        fi
+
+        SANDBOX_DISK_NAME="$(basename "$SANDBOX_DISK_PATH")"
+        if ! command -v aca >/dev/null 2>&1; then
+            echo ""
+            echo -e "  ${Y}aca CLI not found.${N}"
+            echo -e "  ${D}Install it first, then run:${N}"
+            echo "    az group create --name \"$SANDBOX_RG\" --location \"$SANDBOX_REGION\""
+            echo "    aca sandboxgroup create -g \"$SANDBOX_RG\" --name \"$SANDBOX_GROUP\" --location \"$SANDBOX_REGION\" --set-config"
+            echo "    aca sandboxgroup identity assign --group \"$SANDBOX_GROUP\" --system-assigned"
+            echo "    aca sandbox create --group \"$SANDBOX_GROUP\" --disk \"$SANDBOX_DISK_NAME\" --label app=openclaw --label env=$SANDBOX_SQUAD"
+            if [ -n "$SANDBOX_EMAIL" ]; then
+                echo "    aca sandbox port add --group \"$SANDBOX_GROUP\" -l app=openclaw,env=$SANDBOX_SQUAD --port 18789 --email \"$SANDBOX_EMAIL\""
+            fi
+            echo ""
+            exit 1
+        fi
+
+        echo ""
+        echo -e "  ${C}Registering Sandbox artifact with ACA Sandbox...${N}"
+        az group create --name "$SANDBOX_RG" --location "$SANDBOX_REGION" >/dev/null
+        aca sandboxgroup create -g "$SANDBOX_RG" --name "$SANDBOX_GROUP" --location "$SANDBOX_REGION" --set-config
+        aca sandboxgroup identity assign --group "$SANDBOX_GROUP" --system-assigned
+        aca sandbox create --group "$SANDBOX_GROUP" --disk "$SANDBOX_DISK_NAME" --label app=openclaw --label env="$SANDBOX_SQUAD"
+        if [ -n "$SANDBOX_EMAIL" ]; then
+            aca sandbox port add --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" --port 18789 --email "$SANDBOX_EMAIL"
+        fi
+        aca sandbox get --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD"
+        azd env set SANDBOX_DISK_IMAGE_PATH "$SANDBOX_DISK_PATH" >/dev/null 2>&1 || true
+        echo -e "  ${G}Sandbox upload complete for ${SANDBOX_SQUAD}.${N}"
+        echo ""
+        ;;
+    delete)
+        SANDBOX_SQUAD="${3:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
+        SANDBOX_REGION="${4:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
+        SANDBOX_RG="${5:-$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo rg-$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo $SANDBOX_SQUAD))}"
+        SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
+
+        if ! command -v aca >/dev/null 2>&1; then
+            echo ""
+            echo -e "  ${Y}aca CLI not found.${N}"
+            echo "  To delete the sandbox manually:"
+            echo "    aca sandbox delete -l app=openclaw,env=$SANDBOX_SQUAD --yes"
+            echo "    aca sandboxgroup delete -g \"$SANDBOX_RG\" --name \"$SANDBOX_GROUP\" --yes"
+            echo ""
+            exit 1
+        fi
+
+        echo ""
+        echo -e "  ${C}Deleting Sandbox resources...${N}"
+        aca sandbox delete -l app=openclaw,env="$SANDBOX_SQUAD" --yes
+        aca sandboxgroup delete -g "$SANDBOX_RG" --name "$SANDBOX_GROUP" --yes
+        echo -e "  ${G}Sandbox deleted for ${SANDBOX_SQUAD}.${N}"
+        echo ""
+        ;;
+    status)
+        echo ""
+        if command -v aca >/dev/null 2>&1; then
+            SANDBOX_SQUAD="${3:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
+            SANDBOX_RG="${4:-$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo rg-$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo $SANDBOX_SQUAD))}"
+            SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
+            aca sandbox get --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" 2>/dev/null || true
+            echo ""
+        fi
+        if [ ! -f "$SANDBOX_METADATA" ]; then
+            echo -e "  ${Y}No sandbox metadata found at:${N} $SANDBOX_METADATA"
+            echo -e "  ${D}Run: devclaw sandbox build${N}"
+            echo ""
+            exit 0
+        fi
+        echo -e "  ${C}Sandbox artifact metadata:${N}"
+        cat "$SANDBOX_METADATA"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo -e "  ${C}devclaw sandbox${N}"
+        echo ""
+        echo "  Subcommands:"
+        echo "    devclaw sandbox init [squad] [region] [openai-region]"
+        echo "    devclaw sandbox build [dir] [format] [region] [squad]"
+        echo "    devclaw sandbox upload [squad] [region] [disk-path] [rg] [email]"
+        echo "    devclaw sandbox delete [squad] [region] [rg]"
+        echo "    devclaw sandbox status [dir]"
+        echo ""
+        ;;
+    esac
+    ;;
+
 login)
     ACCOUNT="${2:-}"
     echo ""
@@ -524,6 +678,9 @@ teams)
     echo ""
     echo "  Channels:"
     echo "    devclaw teams      Add Microsoft Teams integration (optional add-on)"
+    echo ""
+    echo "  Sandbox:"
+    echo "    devclaw sandbox    Build/show Sandbox disk artifact metadata"
     echo ""
     echo "  Multi-squad:"
     echo "    devclaw squad      Manage independent squads (run 'devclaw squad' for help)"

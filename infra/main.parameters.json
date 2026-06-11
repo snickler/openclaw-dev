@@ -26,6 +26,12 @@
     "acaSandboxMode": {
       "value": "${ACA_SANDBOX_MODE=sandbox}"
     },
+    "sandboxDiskName": {
+      "value": "${SANDBOX_DISK_NAME=}"
+    },
+    "sandboxDiskSnapshotId": {
+      "value": "${SANDBOX_DISK_SNAPSHOT_ID=}"
+    },
     "useExpressEnv": {
       "value": "${USE_EXPRESS_ENV=false}"
     },
