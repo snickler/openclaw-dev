@@ -30,6 +30,7 @@ if "%COMMAND%"=="logs" goto :logs
 if "%COMMAND%"=="test" goto :test
 if "%COMMAND%"=="deploy" goto :deploy
 if "%COMMAND%"=="teams" goto :teams
+if "%COMMAND%"=="squad" goto :squad
 goto :help
 
 :login
@@ -265,6 +266,171 @@ echo     Add ^> DM the bot to test
 echo.
 exit /b 0
 
+:squad
+set "SUBCOMMAND=%2"
+set "SQUAD_NAME=%3"
+set "OPENAI_LOC=%4"
+
+if "%SUBCOMMAND%"=="" goto :squad_help
+
+if "%SUBCOMMAND%"=="init" goto :squad_init
+if "%SUBCOMMAND%"=="use" goto :squad_use
+if "%SUBCOMMAND%"=="select" goto :squad_use
+if "%SUBCOMMAND%"=="list" goto :squad_list
+if "%SUBCOMMAND%"=="current" goto :squad_current
+if "%SUBCOMMAND%"=="status" goto :squad_status
+if "%SUBCOMMAND%"=="up" goto :squad_op
+if "%SUBCOMMAND%"=="deploy" goto :squad_op
+if "%SUBCOMMAND%"=="start" goto :squad_op
+if "%SUBCOMMAND%"=="stop" goto :squad_op
+if "%SUBCOMMAND%"=="restart" goto :squad_op
+if "%SUBCOMMAND%"=="logs" goto :squad_op
+if "%SUBCOMMAND%"=="teams" goto :squad_op
+if "%SUBCOMMAND%"=="down" goto :squad_op
+goto :squad_help
+
+:squad_init
+if "%SQUAD_NAME%"=="" (
+    echo.
+    echo   Usage: devclaw squad init ^<name^> [location] [openai-location]
+    echo   Example: devclaw squad init alpha eastus2 eastus2
+    echo.
+    exit /b 1
+)
+set "ENV_NAME=squad-%SQUAD_NAME%"
+set "LOCATION=%3"
+if "%LOCATION%"=="" set "LOCATION=eastus2"
+if "%OPENAI_LOC%"=="" set "OPENAI_LOC=%LOCATION%"
+
+echo.
+echo   Creating squad environment: %ENV_NAME%
+call azd env new "%ENV_NAME%"
+call azd env select "%ENV_NAME%"
+call azd env set SQUAD_NAME "%SQUAD_NAME%"
+call azd env set SQUAD_INSTANCE 1
+call azd env set AZURE_LOCATION "%LOCATION%"
+call azd env set AZURE_OPENAI_LOCATION "%OPENAI_LOC%"
+echo   Squad '%SQUAD_NAME%' created and selected.
+echo   Run 'devclaw up' to deploy this squad.
+echo.
+exit /b 0
+
+:squad_use
+if "%SQUAD_NAME%"=="" (
+    echo.
+    echo   Usage: devclaw squad use ^<name^>
+    echo   Example: devclaw squad use alpha
+    echo.
+    exit /b 1
+)
+set "ENV_NAME=%SQUAD_NAME%"
+if not "%ENV_NAME:squad-=-%" == "%ENV_NAME%" goto :squad_use_env
+set "ENV_NAME=squad-%SQUAD_NAME%"
+
+:squad_use_env
+echo.
+echo   Switching to squad: %SQUAD_NAME%
+call azd env select "%ENV_NAME%"
+echo   Active environment: %ENV_NAME%
+echo.
+exit /b 0
+
+:squad_list
+echo.
+echo   Available environments:
+call azd env list
+echo.
+exit /b 0
+
+:squad_current
+echo.
+for /f "tokens=*" %%i in ('call azd env get-value AZURE_ENV_NAME 2^>nul') do set "CURRENT_ENV=%%i"
+if "%CURRENT_ENV%"=="" (
+    echo   No active environment.
+    echo.
+    exit /b 0
+)
+echo   Active environment: %CURRENT_ENV%
+for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD=%%i"
+if not "%SQUAD%"=="" echo   Squad name: %SQUAD%
+echo.
+exit /b 0
+
+:squad_status
+if "%SQUAD_NAME%"=="" (
+    echo   Usage: devclaw squad status ^<name^>
+    echo.
+    exit /b 1
+)
+set "ENV_NAME=%SQUAD_NAME%"
+if not "%ENV_NAME:squad-=-%" == "%ENV_NAME%" goto :squad_status_env
+set "ENV_NAME=squad-%SQUAD_NAME%"
+
+:squad_status_env
+echo.
+echo   Status for squad: %SQUAD_NAME%
+call azd status --environment "%ENV_NAME%" 2>nul
+if errorlevel 1 echo   No deployment found for this squad.
+echo.
+exit /b 0
+
+:squad_op
+if "%SQUAD_NAME%"=="" (
+    echo   Usage: devclaw squad %SUBCOMMAND% ^<name^>
+    echo.
+    exit /b 1
+)
+set "ENV_NAME=%SQUAD_NAME%"
+if not "%ENV_NAME:squad-=-%" == "%ENV_NAME%" goto :squad_op_env
+set "ENV_NAME=squad-%SQUAD_NAME%"
+
+:squad_op_env
+echo   Switching to squad: %SQUAD_NAME%
+call azd env select "%ENV_NAME%"
+
+if "%SUBCOMMAND%"=="up" (
+    call :up
+) else if "%SUBCOMMAND%"=="deploy" (
+    call :deploy
+) else if "%SUBCOMMAND%"=="start" (
+    call :start
+) else if "%SUBCOMMAND%"=="stop" (
+    call :stop
+) else if "%SUBCOMMAND%"=="restart" (
+    call :restart
+) else if "%SUBCOMMAND%"=="logs" (
+    call :logs
+) else if "%SUBCOMMAND%"=="teams" (
+    call :teams
+) else if "%SUBCOMMAND%"=="down" (
+    call :down
+)
+exit /b 0
+
+:squad_help
+echo.
+echo   devclaw squad - Multi-squad orchestration
+echo.
+echo   Subcommands:
+echo     devclaw squad init ^<name^> [loc] [openai-loc]  Create and select squad
+echo     devclaw squad use ^<name^>                      Switch to squad
+echo     devclaw squad select ^<name^>                   Alias for use
+echo     devclaw squad list                            List all squads
+echo     devclaw squad current                         Show active squad
+echo     devclaw squad status ^<name^>                  Show squad status
+echo.
+echo   Squad-scoped operations:
+echo     devclaw squad up ^<name^>        Deploy squad
+echo     devclaw squad deploy ^<name^>    Rebuild and deploy
+echo     devclaw squad start ^<name^>     Start squad agent
+echo     devclaw squad stop ^<name^>      Stop squad agent (state preserved)
+echo     devclaw squad restart ^<name^>   Restart squad agent
+echo     devclaw squad logs ^<name^>      Stream squad logs
+echo     devclaw squad teams ^<name^>     Add Teams to squad
+echo     devclaw squad down ^<name^>      Delete squad resources
+echo.
+exit /b 0
+
 :help
 echo.
 echo   devclaw - OpenClaw in the Microsoft Cloud
@@ -275,6 +441,9 @@ echo     devclaw test       Verify it's working
 echo.
 echo   Channels:
 echo     devclaw teams      Add Microsoft Teams integration (optional add-on)
+echo.
+echo   Multi-squad:
+echo     devclaw squad      Manage independent squads (run 'devclaw squad' for help)
 echo.
 echo   Control:
 echo     devclaw start      Start the agent

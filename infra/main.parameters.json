@@ -24,7 +24,7 @@
       "value": "${SERVICE_OPENCLAW_IMAGE_NAME}"
     },
     "acaSandboxMode": {
-      "value": "${ACA_SANDBOX_MODE=standard}"
+      "value": "${ACA_SANDBOX_MODE=sandbox}"
     },
     "useExpressEnv": {
       "value": "${USE_EXPRESS_ENV=false}"

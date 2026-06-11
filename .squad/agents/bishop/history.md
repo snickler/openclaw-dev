@@ -18,3 +18,5 @@
 - 2026-06-11: Logged completion of squad-aware scaling + explicit squad-scoped wrapper rollout in orchestration and decisions records.
 
 - 2026-06-11: Closed remaining hardening follow-up by pinning Docker base image to immutable digest and recording validation evidence.
+
+- 2026-06-11: Session closeout for hardening batch; AOAI RAI hardening (D-005), Docker digest pinning (D-017), and squad-aware ACA deployment (D-011) all verified and release-ready.

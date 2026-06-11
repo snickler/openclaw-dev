@@ -48,8 +48,8 @@ param easyAuthAppId string = ''
 @description('Container image to deploy. azd populates from SERVICE_OPENCLAW_IMAGE_NAME after first deploy; empty on first provision (placeholder used).')
 param containerImage string = ''
 
-@description('Host mode selector: "standard" (default) for Azure Container Apps with optional Express mode cold-start, or "sandbox" to document ACA Sandbox intent (requires separate disk provisioning outside this template). See SKILL.md for details.')
-param acaSandboxMode string = 'standard'
+@description('Host mode selector: "sandbox" (default) for ACA Sandbox (requires custom disk image provisioning), or "standard" for legacy Azure Container Apps with optional Express mode cold-start. See SKILL.md for details.')
+param acaSandboxMode string = 'sandbox'
 
 @description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled.')
 param useExpressEnv string = 'false'

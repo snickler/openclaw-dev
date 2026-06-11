@@ -13,7 +13,7 @@ description: Deploy OpenClaw with Azure OpenAI using one CLI command. Chat in th
 -->
 # 🦞 openclaw-dev on Azure
 
-A small dev tool that deploys [OpenClaw](https://github.com/openclaw/openclaw) to an ephemeral cloud sandbox you can chat with from the browser — always on, isolated from your laptop, reachable from any device. Uses Azure OpenAI in Foundry Models for the backend (default `gpt-5-mini`). Runs on **Azure Container Apps** by default; optionally can explore **Express mode** for faster cold-start or **ACA Sandbox** (manual disk provisioning). Microsoft Teams is an optional add-on.
+A small dev tool that deploys [OpenClaw](https://github.com/openclaw/openclaw) to an ephemeral cloud sandbox you can chat with from the browser — always on, isolated from your laptop, reachable from any device. Uses Azure OpenAI in Foundry Models for the backend (default `gpt-5-mini`). **Default deployment target is ACA Sandbox** (isolated Linux VMs via custom disk image). For compatibility with storage state persistence and Teams integration, a **standard Azure Container Apps** option is also available. Microsoft Teams is an optional add-on.
 
 > **Just want OpenClaw on your Windows machine?** Use [Microsoft Execution Containers (MXC)](https://github.com/microsoft/mxc) — a policy-driven runtime that contains the OpenClaw node + gateway on Windows, [announced at Build 2026](https://blogs.windows.com/windowsdeveloper/2026/06/02/build-2026-furthering-windows-as-the-trusted-platform-for-development/). This repo is for the **cloud** path: when you want an always-on, multi-device, throwaway sandbox instead.
 
@@ -51,14 +51,22 @@ cd openclaw-dev
 .\devclaw.cmd up
 ```
 
-`devclaw up` provisions the baseline Azure resources on standard Azure Container Apps. For **Express mode** (faster cold-start), use `azd env set USE_EXPRESS_ENV true` before `devclaw up`. For **ACA Sandbox** host exploration,
-see the explicit ACA Sandbox flow in the skill playbook (`skills/openclaw-on-azure/SKILL.md`).
+`devclaw up` provisions the baseline Azure resources for ACA Sandbox deployment, which requires a custom Node.js disk image or bootstrap strategy (see "Disk image provisioning" below). For **standard Azure Container Apps** (legacy, storage-persistent), use `azd env set ACA_SANDBOX_MODE standard` before `devclaw up`. You may also optionally enable **Express mode** for faster cold-start with `azd env set USE_EXPRESS_ENV true` when using standard mode.
 
-### ACA Sandbox replacement flow (opt-in, separate from template)
+### Disk image provisioning (required for Sandbox)
 
-⚠️ **Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template packages OpenClaw as a full Node.js + npm + auth proxy OCI image, which cannot run directly on bare sandbox OS disks.
+⚠️ **Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template's Bicep is configured for Sandbox mode by default, but you need to provide a custom Node.js + OpenClaw runtime disk image.
 
-When you have a **custom disk image** or want to explore sandbox isolation separately:
+**Option A (Recommended for now): Document required steps**
+Users should provision their own Node.js disk image (24 GB with Node.js, npm, and auth-proxy installed), snap it, then register with ACA Sandbox. The Bicep template will reference that disk.
+
+**Option B (Future): Build and snap Node.js disk image**
+We could add a `build-disk-image.sh` script in the repo to bake a full Node.js + auth-proxy image, snap it, and register it automatically.
+
+**Option C (Future): Use bootstrap on `aca sandbox exec` post-boot**
+After a plain Linux boot, use `aca sandbox exec` to install Node.js and start the auth-proxy dynamically.
+
+**For now, use Option A:** If you have a pre-built Node.js disk image, you can use ACA Sandbox isolation by running:
 
 ```bash
 aca -s <sub> -g <rg> sandboxgroup create --name sg-<env> --location <region> --set-config
@@ -66,6 +74,13 @@ aca sandboxgroup identity assign --group sg-<env> --system-assigned
 aca sandbox create --group sg-<env> --disk node-24 --label app=openclaw --label env=<env>
 aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --email <you@tenant>
 aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
+```
+
+**Fallback to standard ACA:** If you don't have a custom disk image yet, you can revert to standard Container Apps (storage-persistent, no disk provisioning needed):
+
+```bash
+azd env set ACA_SANDBOX_MODE standard
+./devclaw up
 ```
 
 ### Multi-squad orchestration

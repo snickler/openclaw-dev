@@ -2,7 +2,7 @@
 name: openclaw-on-azure
 description: >-
   Deploy, operate, and troubleshoot a secure, hosted OpenClaw AI assistant on
-  Azure (standard Azure Container Apps with optional Express mode for fast cold-start, plus Azure OpenAI in Foundry Models, passwordless via
+  Azure (default ACA Sandbox with custom disk provisioning, fallback to standard Azure Container Apps, plus Azure OpenAI in Foundry Models, passwordless via
   Managed Identity, Entra ID Easy Auth, optional Microsoft Teams channel) using
   the repo's `devclaw` wrapper around the Azure Developer CLI (azd). USE FOR:
   deploy OpenClaw to Azure, "devclaw up" / "azd up" failing, set the model or
@@ -18,7 +18,7 @@ license: MIT
 
 This skill lets an AI assistant set up, run, and fix the **openclaw-dev** template
 in plain English. It deploys [OpenClaw](https://github.com/openclaw/openclaw) as a
-secure, always-on AI assistant on **Azure Container Apps (default) or ACA Sandbox (opt-in replacement)**, wired to **Azure OpenAI
+secure, always-on AI assistant on **ACA Sandbox (default, requires custom disk provisioning) or standard Azure Container Apps (legacy fallback)**, wired to **Azure OpenAI
 in Foundry Models** over a **Managed Identity** (no API keys), gated by **Entra ID
 Easy Auth**, and optionally reachable from **Microsoft Teams** on the user's phone.
 
@@ -70,11 +70,25 @@ If `devclaw`/`devclaw.cmd` is not executable, call `azd` directly (`azd up`, `az
 The fastest real smoke test is the **WebChat UI** (open the URL from `devclaw status`),
 not `devclaw test`.
 
-### ACA Sandbox replacement flow (opt-in, separate from template)
+### Disk image provisioning (required for ACA Sandbox — the default)
 
-**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template's OpenClaw runtime is packaged as a full Node.js + npm + auth proxy OCI image, which cannot run directly on bare sandbox OS disks. 
+**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). The template defaults to Sandbox mode, which requires you to provide a custom Node.js disk image with auth-proxy installed.
 
-When the user has a **custom disk image** or wants to explore sandbox isolation separately, run:
+**Three paths forward:**
+
+| Option | Effort | Timeline | Recommendation |
+|--------|--------|----------|-----------------|
+| **Option A: Document required steps (current)** | Low | Now | Recommended while building disk automation. Users provision their own Node.js image, snap it, and register with ACA Sandbox. |
+| **Option B: Bake and snap Node.js disk image** | Medium | Near future | Add a `build-disk-image.sh` script to the repo; CI snaps it automatically; Bicep references the snap. |
+| **Option C: Bootstrap via `aca sandbox exec` post-boot** | Medium | Near future | After a plain Linux boot, use `aca sandbox exec` to install Node.js and start auth-proxy dynamically. |
+
+**Recommended: Option A (document required steps)**
+
+Until we bake disk images automatically, users should:
+
+1. **Build or obtain a Node.js disk image** (24 GB, minimal Linux + Node.js 20+ + npm + auth-proxy)
+2. **Snap the image** in your target region (e.g., `az snapshot create ...`)
+3. **Create a sandbox group and register the disk** using `aca` CLI:
 
 ```bash
 aca -s <subscription> -g <resource-group> sandboxgroup create --name sg-<env> --location <region> --set-config
@@ -84,7 +98,14 @@ aca sandbox port add --group sg-<env> -l app=openclaw,env=<env> --port 18789 --e
 aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
 ```
 
-**Note:** This is a **manual replacement flow, not automatic**. The default `devclaw up` uses **standard Azure Container Apps with Express mode** for fast cold-start (nearly identical cost/performance to sandbox, no custom disk required). See "Host modes" below.
+**Don't have a custom disk yet?** Revert to standard Container Apps:
+
+```bash
+azd env set ACA_SANDBOX_MODE standard
+./devclaw up
+```
+
+This deploys to standard Container Apps (stateful, Easy Auth + Teams support) instead of Sandbox.
 
 ---
 
@@ -92,11 +113,11 @@ aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
 
 | Mode | Default? | Cold start | Cost | Easy Auth + Teams | Setup |
 |------|----------|-----------|------|------------------|-------|
-| **Container Apps (standard)** | ✅ YES | ~30–60s | $0 when idle | ✅ Full support | `devclaw up` |
-| **Container Apps (Express)** | Manual | ~10–20s | $0 when idle | ✅ Full support | `azd env set USE_EXPRESS_ENV true` before `devclaw up` |
-| **ACA Sandbox** | ❌ No | ~5–10s | $0 when idle | ❌ Not yet | Manual disk provisioning + `aca` CLI (future) |
+| **ACA Sandbox** | ✅ YES | ~5–10s | $0 when idle | ❌ Not yet (future) | Custom Node.js disk image + `aca sandbox create` |
+| **Container Apps (standard)** | ❌ No (legacy) | ~30–60s | $0 when idle | ✅ Full support | `azd env set ACA_SANDBOX_MODE standard` before `devclaw up` |
+| **Container Apps (Express)** | ❌ No (legacy) | ~10–20s | $0 when idle | ✅ Full support | `azd env set ACA_SANDBOX_MODE standard USE_EXPRESS_ENV true` before `devclaw up` |
 
-**Decision:** The template defaults to **standard Container Apps** (no Express) because it's the most compatible with Easy Auth, Teams integration, and storage state persistence. If you need faster cold-start, set `USE_EXPRESS_ENV=true` in your `azd env` before `devclaw up`. ACA Sandbox is documented here for users who want to explore it separately with their own disk images.
+**Decision:** The template **defaults to ACA Sandbox** (fastest cold-start, most isolated). However, Sandbox requires a pre-built custom disk image (Node.js + auth-proxy), which is not automatically generated today. For immediate deployment without custom disk provisioning, set `ACA_SANDBOX_MODE=standard` to use legacy Container Apps (stateful via Azure Files, full Easy Auth + Teams support). See "Disk image provisioning" section below for Sandbox setup.
 
 ---
 
@@ -126,7 +147,7 @@ aca sandbox get --group sg-<env> -l app=openclaw,env=<env>
 | `SQUAD_INSTANCE` | no | `1` | Numeric squad instance identifier; use distinct values per squad deployment |
 | `OPENCLAW_MIN_REPLICAS` | no | `1` | Minimum ACA replicas for the OpenClaw runtime |
 | `OPENCLAW_MAX_REPLICAS` | no | `3` | Maximum ACA replicas for the OpenClaw runtime (must be >= min) |
-| `ACA_SANDBOX_MODE` | no | `standard` | Host mode selector: `standard` (default) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`); `sandbox` marks intent to explore ACA Sandbox replacement (requires separate disk provisioning outside this template, see "ACA Sandbox replacement flow" above). |
+| `ACA_SANDBOX_MODE` | no | `sandbox` | Host mode selector: `sandbox` (default) for ACA Sandbox (requires custom Node.js disk image provisioning); `standard` (legacy) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`). For Sandbox mode, see "Disk image provisioning" below; disk must be pre-built and registered with ACA Sandbox. |
 | `USE_EXPRESS_ENV` | no | `false` | When set to `true`, Container Apps environment is created in Express mode (preview) for faster cold-start (~10–20s vs. ~30–60s). Only applicable when `ACA_SANDBOX_MODE=standard`. Supported regions include East Asia and West Central US. Express mode disables storage mounts, so session state does not persist across replica restarts. |
 | `SKIP_STORAGE` | no | `false` | Set to `true` if Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Skips the storage account, file share, and volume mount. Trade-off: gateway token + sessions don't persist across replica restarts. |
 | `SERVICE_MANAGEMENT_REFERENCE` | no | unset | Set to a service-management-reference GUID if your tenant requires `serviceManagementReference` on every new app registration (common on large corporate tenants). The preprovision hook passes it to `az ad app create` for both the Easy Auth and the Bot app registrations. |
@@ -158,12 +179,21 @@ azd env set AZURE_OPENAI_LOCATION eastus2
 ## Common tasks
 
 ### Deploy from scratch
+
+**Default path (ACA Sandbox — requires custom disk image):**
+
 1. Confirm `az`/`azd` installed and logged in (`devclaw login` if not).
-2. Optional: `azd env set AZURE_SUBSCRIPTION_ID <id>` / `AZURE_LOCATION <region>` /
-   `AZURE_OPENAI_LOCATION <region>`.
-3. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min.
-4. Verify: `devclaw status` (expect `Running`), then open the URL in a browser —
-   Entra ID prompts for Microsoft sign-in, then the WebChat UI loads.
+2. Ensure you have a pre-built Node.js disk image ready (see "Disk image provisioning" section above).
+3. Optional: `azd env set AZURE_SUBSCRIPTION_ID <id>` / `AZURE_LOCATION <region>` / `AZURE_OPENAI_LOCATION <region>`.
+4. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min. Bicep will default to Sandbox mode; you'll need to manually provision the disk and sandbox group via `aca` CLI as shown above.
+
+**Quick start without a disk image (use standard Container Apps instead):**
+
+1. Confirm `az`/`azd` installed and logged in.
+2. `azd env set ACA_SANDBOX_MODE standard` — this opts out of Sandbox and uses standard Container Apps (stateful, Easy Auth + Teams supported).
+3. Optional: `azd env set AZURE_SUBSCRIPTION_ID <id>` / `AZURE_LOCATION <region>` / `AZURE_OPENAI_LOCATION <region>`.
+4. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min.
+5. Verify: `devclaw status` (expect `Running`), then open the URL in a browser — Entra ID prompts for Microsoft sign-in, then the WebChat UI loads.
 
 ### Orchestrate multiple squads
 Use one `azd` environment per squad deployment:

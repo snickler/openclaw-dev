@@ -59,6 +59,158 @@ check_prereqs
 
 case "$COMMAND" in
 
+squad)
+    SUBCOMMAND="${2:-}"
+    SQUAD_NAME="${3:-}"
+    OPENAI_LOC="${4:-}"
+    
+    case "$SUBCOMMAND" in
+    init)
+        if [ -z "$SQUAD_NAME" ]; then
+            echo ""
+            echo -e "  ${R}Usage: devclaw squad init <name> [location] [openai-location]${N}"
+            echo -e "  ${D}Example: devclaw squad init alpha eastus2 eastus2${N}"
+            echo ""
+            exit 1
+        fi
+        ENV_NAME="squad-${SQUAD_NAME}"
+        LOCATION="${3:-eastus2}"
+        OPENAI_LOC="${4:-$LOCATION}"
+        
+        echo ""
+        echo -e "  ${C}Creating squad environment: ${ENV_NAME}${N}"
+        azd env new "$ENV_NAME"
+        azd env select "$ENV_NAME"
+        azd env set SQUAD_NAME "$SQUAD_NAME"
+        azd env set SQUAD_INSTANCE 1
+        azd env set AZURE_LOCATION "$LOCATION"
+        azd env set AZURE_OPENAI_LOCATION "$OPENAI_LOC"
+        echo -e "  ${G}Squad '${SQUAD_NAME}' created and selected.${N}"
+        echo -e "  ${D}Run 'devclaw up' to deploy this squad.${N}"
+        echo ""
+        ;;
+    use|select)
+        if [ -z "$SQUAD_NAME" ]; then
+            echo ""
+            echo -e "  ${R}Usage: devclaw squad use <name>${N}"
+            echo -e "  ${D}Example: devclaw squad use alpha${N}"
+            echo ""
+            exit 1
+        fi
+        ENV_NAME="$SQUAD_NAME"
+        if [[ ! "$ENV_NAME" =~ ^squad- ]]; then
+            ENV_NAME="squad-${SQUAD_NAME}"
+        fi
+        echo ""
+        echo -e "  ${C}Switching to squad: ${SQUAD_NAME}${N}"
+        azd env select "$ENV_NAME"
+        echo -e "  ${G}Active environment: ${ENV_NAME}${N}"
+        echo ""
+        ;;
+    list)
+        echo ""
+        echo -e "  ${C}Available environments:${N}"
+        azd env list
+        echo ""
+        ;;
+    current)
+        echo ""
+        CURRENT_ENV=$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo "")
+        if [ -z "$CURRENT_ENV" ]; then
+            echo -e "  ${Y}No active environment.${N}"
+        else
+            echo -e "  ${C}Active environment: ${CURRENT_ENV}${N}"
+            SQUAD=$(azd env get-value SQUAD_NAME 2>/dev/null || echo "")
+            if [ -n "$SQUAD" ]; then
+                echo -e "  ${C}Squad name: ${SQUAD}${N}"
+            fi
+        fi
+        echo ""
+        ;;
+    status)
+        if [ -z "$SQUAD_NAME" ]; then
+            echo -e "  ${R}Usage: devclaw squad status <name>${N}"
+            echo ""
+            exit 1
+        fi
+        ENV_NAME="$SQUAD_NAME"
+        if [[ ! "$ENV_NAME" =~ ^squad- ]]; then
+            ENV_NAME="squad-${SQUAD_NAME}"
+        fi
+        echo ""
+        echo -e "  ${C}Status for squad: ${SQUAD_NAME}${N}"
+        azd status --environment "$ENV_NAME" 2>/dev/null || echo -e "  ${Y}No deployment found for this squad.${N}"
+        echo ""
+        ;;
+    up|deploy|start|stop|restart|logs|down|teams)
+        OP="$SUBCOMMAND"
+        if [ -z "$SQUAD_NAME" ]; then
+            echo -e "  ${R}Usage: devclaw squad ${OP} <name>${N}"
+            echo ""
+            exit 1
+        fi
+        ENV_NAME="$SQUAD_NAME"
+        if [[ ! "$ENV_NAME" =~ ^squad- ]]; then
+            ENV_NAME="squad-${SQUAD_NAME}"
+        fi
+        
+        echo -e "  ${D}Switching to squad: ${SQUAD_NAME}${N}"
+        azd env select "$ENV_NAME"
+        
+        case "$OP" in
+        up)
+            "$0" up
+            ;;
+        deploy)
+            "$0" deploy
+            ;;
+        start)
+            "$0" start
+            ;;
+        stop)
+            "$0" stop
+            ;;
+        restart)
+            "$0" restart
+            ;;
+        logs)
+            "$0" logs
+            ;;
+        teams)
+            "$0" teams
+            ;;
+        down)
+            "$0" down
+            ;;
+        esac
+        ;;
+    *)
+        echo ""
+        echo -e "  ${C}devclaw squad — Multi-squad orchestration${N}"
+        echo ""
+        echo "  Subcommands:"
+        echo "    devclaw squad init <name> [loc] [openai-loc]  Create and select squad"
+        echo "    devclaw squad use <name>                      Switch to squad"
+        echo "    devclaw squad select <name>                   Alias for use"
+        echo "    devclaw squad list                            List all squads"
+        echo "    devclaw squad current                         Show active squad"
+        echo "    devclaw squad status <name>                   Show squad status"
+        echo ""
+        echo "  Squad-scoped operations:"
+        echo "    devclaw squad up <name>        Deploy squad"
+        echo "    devclaw squad deploy <name>    Rebuild and deploy"
+        echo "    devclaw squad start <name>     Start squad agent"
+        echo "    devclaw squad stop <name>      Stop squad agent (state preserved)"
+        echo "    devclaw squad restart <name>   Restart squad agent"
+        echo "    devclaw squad logs <name>      Stream squad logs"
+        echo "    devclaw squad teams <name>     Add Teams to squad"
+        echo "    devclaw squad down <name>      Delete squad resources"
+        echo ""
+        ;;
+    esac
+    exit 0
+    ;;
+
 login)
     ACCOUNT="${2:-}"
     echo ""
@@ -372,6 +524,9 @@ teams)
     echo ""
     echo "  Channels:"
     echo "    devclaw teams      Add Microsoft Teams integration (optional add-on)"
+    echo ""
+    echo "  Multi-squad:"
+    echo "    devclaw squad      Manage independent squads (run 'devclaw squad' for help)"
     echo ""
     echo "  Control:"
     echo "    devclaw start      Start the agent"
