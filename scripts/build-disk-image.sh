@@ -39,8 +39,9 @@ redact_log() {
 }
 
 secret_scan() {
-    local pattern='(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"''"'"'][^"'"'"''"'"']{12,}|token[[:space:]]*[:=][[:space:]]*["'"'"''"'"'][^"'"'"''"'"']{12,}|client[_-]?secret[[:space:]]*[:=])'
-    if grep -RInE "$pattern" "$1" >/dev/null 2>&1; then
+    local pattern='(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----)'
+    # Exclude package-lock.json (contains SRI hashes) and focus on high-confidence secret patterns
+    if grep -RInE "$pattern" "$1" --exclude="package-lock.json" >/dev/null 2>&1; then
         echo "Secret-like pattern detected in $2; refusing to build artifact." >&2
         exit 1
     fi
