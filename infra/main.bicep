@@ -57,15 +57,13 @@ param sandboxDiskName string = ''
 @description('ACA Sandbox disk snapshot resource ID. Optional in phase 1/2 while sandbox disk APIs remain preview.')
 param sandboxDiskSnapshotId string = ''
 
-@description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled.')
+@description('Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US).')
 param useExpressEnv string = 'false'
 
 var normalizedSandboxMode = toLower(trim(acaSandboxMode))
-var expressEnabled = normalizedSandboxMode == 'sandbox'
-  ? true
-  : normalizedSandboxMode == 'standard'
-    ? toLower(useExpressEnv) == 'true'
-    : false
+var expressEnabled = normalizedSandboxMode == 'standard'
+  ? toLower(useExpressEnv) == 'true'
+  : false
 
 @description('Set SKIP_STORAGE=true in your azd env to skip the storage account + Azure Files volume mount. Use on subscriptions where Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Trade-off: gateway token + sessions do not persist across replica restarts.')
 param skipStorage string = 'false'

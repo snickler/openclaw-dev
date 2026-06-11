@@ -237,7 +237,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 //   Express does NOT support appLogsConfiguration — logs flow through platform defaults.
 // Otherwise → standard Consumption-only env wired to the Log Analytics workspace above.
 // ---------------------------------------------------------------------------
-resource environment 'Microsoft.App/managedEnvironments@2026-03-02-preview' = {
+resource environment 'Microsoft.App/managedEnvironments@2026-03-02-preview' = if (!sandboxModeEnabled) {
   name: 'env-${resourceToken}'
   location: location
   tags: {
@@ -291,7 +291,7 @@ var isPlaceholder = empty(containerImage)
 var effectiveImage = isPlaceholder ? placeholderImage : containerImage
 var appPort = isPlaceholder ? 80 : 18789
 
-resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
+resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (!sandboxModeEnabled) {
   name: 'openclaw-${resourceToken}'
   location: location
   identity: {
@@ -388,7 +388,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
 // Easy Auth — Entra ID login gate (requires Microsoft login before any request)
 // Only deployed if easyAuthAppId is provided by the preprovision hook
 // ---------------------------------------------------------------------------
-resource containerAppAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (!empty(easyAuthAppId)) {
+resource containerAppAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (!sandboxModeEnabled && !empty(easyAuthAppId)) {
   parent: containerApp
   name: 'current'
   properties: {
@@ -429,7 +429,7 @@ resource openaiResource 'Microsoft.CognitiveServices/accounts@2024-10-01' existi
   name: last(split(openaiResourceId, '/'))
 }
 
-resource cognitiveServicesUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource cognitiveServicesUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!sandboxModeEnabled) {
   name: guid(subscription().id, containerApp.id, 'a97b65f3-24c7-4388-baec-2e87135dc908')
   scope: openaiResource
   properties: {
@@ -449,8 +449,8 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = acr.properties.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = acr.name
 // Host outputs — named generically so the underlying compute can change
 // (e.g. AKS, App Service) without updating callers or azd env consumers.
-output HOST_FQDN string = containerApp.properties.configuration.ingress.fqdn
-output HOST_NAME string = containerApp.name
+output HOST_FQDN string = sandboxModeEnabled ? '' : containerApp.properties.configuration.ingress.fqdn
+output HOST_NAME string = sandboxModeEnabled ? '' : containerApp.name
 output ACA_SANDBOX_MODE string = normalizedSandboxMode
 output SANDBOX_DISK_NAME string = sandboxDiskName
 output SANDBOX_DISK_SNAPSHOT_ID string = sandboxDiskSnapshotId
@@ -459,7 +459,7 @@ output SANDBOX_DISK_SNAPSHOT_ID string = sandboxDiskSnapshotId
 // Azure Bot Service (optional — only deployed if botAppId is provided)
 // Uses the Entra ID app registration created by the preprovision hook
 // ---------------------------------------------------------------------------
-resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId)) {
+resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!sandboxModeEnabled && !empty(botAppId)) {
   name: 'bot-${resourceToken}'
   location: 'global'
   kind: 'azurebot'
@@ -479,7 +479,7 @@ resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId
   }
 }
 
-resource teamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (!empty(botAppId)) {
+resource teamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (!sandboxModeEnabled && !empty(botAppId)) {
   parent: bot
   name: 'MsTeamsChannel'
   location: 'global'

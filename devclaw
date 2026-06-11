@@ -384,9 +384,21 @@ login)
 up)
     echo ""
     echo -e "  ${C}Deploying OpenClaw to Azure...${N}"
-    echo -e "  ${D}This provisions Azure OpenAI + Container Apps with managed identity.${N}"
+    HOST_MODE="$(azd env get-value ACA_SANDBOX_MODE 2>/dev/null | tr -d '[:space:]' || echo "")"
+    if [ "${HOST_MODE,,}" = "sandbox" ]; then
+        echo -e "  ${D}Sandbox mode detected (ACA_SANDBOX_MODE=sandbox). Running infrastructure provision only.${N}"
+    else
+        echo -e "  ${D}This provisions Azure OpenAI + Container Apps with managed identity.${N}"
+    fi
     echo ""
-    if ! azd up; then
+    if [ "${HOST_MODE,,}" = "sandbox" ]; then
+        DEPLOY_CMD="azd provision"
+        azd provision || DEPLOY_FAILED=1
+    else
+        DEPLOY_CMD="azd up"
+        azd up || DEPLOY_FAILED=1
+    fi
+    if [ "${DEPLOY_FAILED:-0}" = "1" ]; then
         echo ""
         echo -e "  ${R}Deployment failed.${N} Common fixes:"
         echo ""
@@ -404,9 +416,14 @@ up)
         exit 1
     fi
     echo ""
-    echo -e "  ${G}OpenClaw deployed!${N}"
-    echo -e "  ${D}Run 'devclaw test' to verify it's working.${N}"
-    echo -e "  ${D}Run 'devclaw logs' to see live output.${N}"
+    if [ "${HOST_MODE,,}" = "sandbox" ]; then
+        echo -e "  ${G}Sandbox infrastructure provisioned.${N}"
+        echo -e "  ${D}Run 'devclaw sandbox build' then 'devclaw sandbox upload' to create the ACA sandbox runtime.${N}"
+    else
+        echo -e "  ${G}OpenClaw deployed!${N}"
+        echo -e "  ${D}Run 'devclaw test' to verify it's working.${N}"
+        echo -e "  ${D}Run 'devclaw logs' to see live output.${N}"
+    fi
     echo ""
     ;;
 

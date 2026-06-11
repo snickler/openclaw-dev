@@ -46,7 +46,14 @@ exit /b 0
 :up
 echo.
 echo   Deploying OpenClaw to Azure...
-call azd up
+set "HOST_MODE="
+for /f "tokens=*" %%i in ('call azd env get-value ACA_SANDBOX_MODE 2^>nul') do set "HOST_MODE=%%i"
+if /i "%HOST_MODE%"=="sandbox" (
+    echo   Sandbox mode detected ^(ACA_SANDBOX_MODE=sandbox^): running infrastructure provision only.
+    call azd provision
+) else (
+    call azd up
+)
 if errorlevel 1 (
     REM Check if the error was a storage policy violation
     echo.
@@ -66,7 +73,12 @@ if errorlevel 1 (
     exit /b 1
 )
 echo.
-echo   OpenClaw deployed! Run 'devclaw test' to verify.
+if /i "%HOST_MODE%"=="sandbox" (
+    echo   Sandbox infrastructure provisioned.
+    echo   Next: run 'devclaw sandbox build' and 'devclaw sandbox upload' to create the ACA sandbox runtime.
+) else (
+    echo   OpenClaw deployed! Run 'devclaw test' to verify.
+)
 echo.
 exit /b 0
 
