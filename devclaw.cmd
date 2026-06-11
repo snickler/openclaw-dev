@@ -436,7 +436,28 @@ echo   Registering Sandbox artifact with ACA Sandbox...
 call az group create --name "%SANDBOX_RG%" --location "%SANDBOX_REGION%" >nul
 call aca sandboxgroup create -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --location "%SANDBOX_REGION%" --set-config
 call aca sandboxgroup identity assign --group "%SANDBOX_GROUP%" --system-assigned
-call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
+set "SANDBOX_COPILOT_PAT=%SANDBOX_GITHUB_COPILOT_PAT%"
+if "%SANDBOX_COPILOT_PAT%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_GITHUB_COPILOT_PAT 2^>nul') do set "SANDBOX_COPILOT_PAT=%%i"
+set "SANDBOX_COPILOT_CRED_ID="
+for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID 2^>nul') do set "SANDBOX_COPILOT_CRED_ID=%%i"
+if not "%SANDBOX_COPILOT_PAT%"=="" (
+    echo %SANDBOX_COPILOT_PAT%| findstr /b "github_pat_" >nul
+    if errorlevel 1 (
+        echo   SANDBOX_GITHUB_COPILOT_PAT must be a fine-grained GitHub PAT ^(github_pat_...^).
+        exit /b 1
+    )
+    if "%SANDBOX_COPILOT_CRED_ID%"=="" (
+        echo   Creating GitHub Copilot credential on sandbox group...
+        for /f "usebackq delims=" %%i in (`aca sandboxgroup credential create --group "%SANDBOX_GROUP%" --type github-copilot --token "%SANDBOX_COPILOT_PAT%" -o json`) do set "COPILOT_CRED_JSON=%%i"
+        for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { ((ConvertFrom-Json '%COPILOT_CRED_JSON%').id) } catch { '' }"`) do set "SANDBOX_COPILOT_CRED_ID=%%i"
+        if not "%SANDBOX_COPILOT_CRED_ID%"=="" call azd env set SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID "%SANDBOX_COPILOT_CRED_ID%" >nul 2>&1
+    )
+)
+if "%SANDBOX_COPILOT_CRED_ID%"=="" (
+    call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
+) else (
+    call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --credential "%SANDBOX_COPILOT_CRED_ID%" --label app=openclaw --label env=%SQUAD_NAME%
+)
 if not "%SANDBOX_EMAIL%"=="" call aca sandbox port add --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% --port 18789 --email "%SANDBOX_EMAIL%"
 call aca sandbox get --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME%
 call azd env set SANDBOX_DISK_IMAGE_PATH "%SANDBOX_DISK_PATH%" >nul 2>&1

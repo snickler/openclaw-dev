@@ -299,7 +299,27 @@ sandbox)
         az group create --name "$SANDBOX_RG" --location "$SANDBOX_REGION" >/dev/null
         aca sandboxgroup create -g "$SANDBOX_RG" --name "$SANDBOX_GROUP" --location "$SANDBOX_REGION" --set-config
         aca sandboxgroup identity assign --group "$SANDBOX_GROUP" --system-assigned
-        aca sandbox create --group "$SANDBOX_GROUP" --disk "$SANDBOX_DISK_NAME" --label app=openclaw --label env="$SANDBOX_SQUAD"
+        SANDBOX_COPILOT_PAT="${SANDBOX_GITHUB_COPILOT_PAT:-$(azd env get-value SANDBOX_GITHUB_COPILOT_PAT 2>/dev/null || echo "")}"
+        SANDBOX_COPILOT_CRED_ID="$(azd env get-value SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID 2>/dev/null || echo "")"
+        SANDBOX_CREDENTIAL_ARGS=()
+        if [ -n "$SANDBOX_COPILOT_PAT" ]; then
+            if [[ "$SANDBOX_COPILOT_PAT" != github_pat_* ]]; then
+                echo -e "  ${R}SANDBOX_GITHUB_COPILOT_PAT must be a fine-grained GitHub PAT (github_pat_...).${N}"
+                exit 1
+            fi
+            if [ -z "$SANDBOX_COPILOT_CRED_ID" ]; then
+                echo -e "  ${C}Creating GitHub Copilot credential on sandbox group...${N}"
+                COPILOT_CRED_JSON="$(aca sandboxgroup credential create --group "$SANDBOX_GROUP" --type github-copilot --token "$SANDBOX_COPILOT_PAT" -o json)"
+                if command -v jq >/dev/null 2>&1; then
+                    SANDBOX_COPILOT_CRED_ID="$(printf '%s' "$COPILOT_CRED_JSON" | jq -r '.id // empty')"
+                else
+                    SANDBOX_COPILOT_CRED_ID="$(printf '%s' "$COPILOT_CRED_JSON" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+                fi
+                [ -n "$SANDBOX_COPILOT_CRED_ID" ] && azd env set SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID "$SANDBOX_COPILOT_CRED_ID" >/dev/null 2>&1 || true
+            fi
+            [ -n "$SANDBOX_COPILOT_CRED_ID" ] && SANDBOX_CREDENTIAL_ARGS=(--credential "$SANDBOX_COPILOT_CRED_ID")
+        fi
+        aca sandbox create --group "$SANDBOX_GROUP" --disk "$SANDBOX_DISK_NAME" --label app=openclaw --label env="$SANDBOX_SQUAD" "${SANDBOX_CREDENTIAL_ARGS[@]}"
         if [ -n "$SANDBOX_EMAIL" ]; then
             aca sandbox port add --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" --port 18789 --email "$SANDBOX_EMAIL"
         fi
