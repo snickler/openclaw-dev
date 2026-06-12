@@ -184,3 +184,19 @@
 - All meaningful changes require team consensus
 - Document architectural decisions here
 - Keep history focused on work, decisions focused on direction
+
+### 2026-06-11 — D-025 CI→ACA runtime blocker remediation orchestration batch
+- **Status:** In progress
+- **Decider:** Scribe (orchestration)
+- **Decision:** Execute a coordinated remediation batch with explicit ownership and gate order: Bishop implements CI→ACA disk registration/runtime fixes; Parker performs pre/post security review; Vasquez runs end-to-end validation for disk visibility, sandbox creation, and endpoint behavior.
+- **Sources:**
+  - `log/2026-06-11T22-37-59.041-04-00-session-scribe.md`
+  - `orchestration-log/2026-06-11T22-37-59.041-04-00-ci-aca-runtime-remediation-batch.md`
+
+  - `decisions/inbox/Scribe-d-025-ci-aca-runtime-remediation-orchestration-batch.md`
+
+## Governance
+
+- All meaningful changes require team consensus
+- Document architectural decisions here
+- Keep history focused on work, decisions focused on direction

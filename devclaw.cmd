@@ -75,7 +75,7 @@ if errorlevel 1 (
 echo.
 if /i "%HOST_MODE%"=="sandbox" (
     echo   Sandbox infrastructure provisioned.
-    echo   Next: run 'devclaw sandbox build' and 'devclaw sandbox upload' to create the ACA sandbox runtime.
+    echo   Next: run 'devclaw sandbox build' to create the ACA sandbox runtime.
 ) else (
     echo   OpenClaw deployed! Run 'devclaw test' to verify.
 )
@@ -321,10 +321,10 @@ exit /b 0
 :sandbox
 set "SUBCOMMAND=%2"
 if "%SUBCOMMAND%"=="" set "SUBCOMMAND=status"
-set "SANDBOX_DIR=%~dp0_local\sandbox"
-if /i "%SUBCOMMAND%"=="build" (
-    if "%3" NEQ "" set "SANDBOX_DIR=%3"
-) else if /i "%SUBCOMMAND%"=="status" (
+set "SANDBOX_DIR="
+for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_DIR 2^>nul') do set "SANDBOX_DIR=%%i"
+if "%SANDBOX_DIR%"=="" set "SANDBOX_DIR=%~dp0_local\sandbox"
+if /i "%SUBCOMMAND%"=="status" (
     if "%3" NEQ "" set "SANDBOX_DIR=%3"
 )
 set "SANDBOX_METADATA=%SANDBOX_DIR%\disk-image-metadata.json"
@@ -355,91 +355,80 @@ call azd env set AZURE_LOCATION "%SANDBOX_REGION%" >nul 2>&1
 call azd env set AZURE_OPENAI_LOCATION "%SANDBOX_OPENAI_REGION%" >nul 2>&1
 call azd env set SANDBOX_DIR "%SANDBOX_DIR%" >nul 2>&1
 echo   Sandbox workspace ready at %SANDBOX_DIR%.
-echo   Run 'devclaw sandbox build %SANDBOX_DIR%' to generate the disk artifact.
+echo   Run 'devclaw sandbox build' to register the ACA sandbox disk image.
 echo.
 exit /b 0
 
 :sandbox_build
-set "SANDBOX_FORMAT=%4"
-if "%SANDBOX_FORMAT%"=="" set "SANDBOX_FORMAT=vhdx"
-for /f "tokens=*" %%i in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "AZ_LOC=%%i"
-if "%AZ_LOC%"=="" set "AZ_LOC=eastus2"
-set "SANDBOX_REGION=%5"
-if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=%AZ_LOC%"
-for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME_FROM_ENV=%%i"
-if "%SQUAD_NAME_FROM_ENV%"=="" set "SQUAD_NAME_FROM_ENV=core"
-set "SANDBOX_SQUAD=%6"
-if "%SANDBOX_SQUAD%"=="" set "SANDBOX_SQUAD=%SQUAD_NAME_FROM_ENV%"
-
-echo.
-echo   Building Sandbox disk artifact...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build-disk-image.ps1" -OutputDir "%SANDBOX_DIR%" -DiskFormat "%SANDBOX_FORMAT%" -Region "%SANDBOX_REGION%" -Squad "%SANDBOX_SQUAD%"
-if errorlevel 1 exit /b 1
-
-if exist "%SANDBOX_METADATA%" (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).artifact_path"`) do set "DISK_PATH=%%i"
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).hash_sha256"`) do set "DISK_HASH=%%i"
-    if not "%DISK_PATH%"=="" call azd env set SANDBOX_DISK_IMAGE_PATH "%DISK_PATH%" >nul 2>&1
-    if not "%DISK_HASH%"=="" call azd env set SANDBOX_DISK_IMAGE_HASH "%DISK_HASH%" >nul 2>&1
-    echo   Sandbox metadata captured in azd env (SANDBOX_DISK_IMAGE_PATH/HASH).
-)
-echo.
-exit /b 0
-
-:sandbox_upload
-set "SQUAD_NAME=%3"
-if "%SQUAD_NAME%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SQUAD_NAME=%%i"
-if "%SQUAD_NAME%"=="" set "SQUAD_NAME=core"
+set "SANDBOX_SQUAD=%3"
+if "%SANDBOX_SQUAD%"=="" for /f "tokens=*" %%i in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SANDBOX_SQUAD=%%i"
+if "%SANDBOX_SQUAD%"=="" set "SANDBOX_SQUAD=core"
 set "SANDBOX_REGION=%4"
 if "%SANDBOX_REGION%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "SANDBOX_REGION=%%i"
 if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=eastus2"
-set "SANDBOX_DISK_PATH=%5"
-set "SANDBOX_RG=%6"
+set "SANDBOX_RG=%5"
 if "%SANDBOX_RG%"=="" for /f "tokens=*" %%i in ('call azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "SANDBOX_RG=%%i"
 if "%SANDBOX_RG%"=="" (
     for /f "tokens=*" %%i in ('call azd env get-value AZURE_ENV_NAME 2^>nul') do set "AZD_ENV_NAME=%%i"
-    if "%AZD_ENV_NAME%"=="" set "AZD_ENV_NAME=%SQUAD_NAME%"
+    if "%AZD_ENV_NAME%"=="" set "AZD_ENV_NAME=%SANDBOX_SQUAD%"
     set "SANDBOX_RG=rg-%AZD_ENV_NAME%"
 )
-set "SANDBOX_EMAIL=%7"
+set "SANDBOX_EMAIL=%6"
 if "%SANDBOX_EMAIL%"=="" for /f "tokens=*" %%i in ('az account show --query user.name -o tsv 2^>nul') do set "SANDBOX_EMAIL=%%i"
-set "SANDBOX_GROUP=sg-%SQUAD_NAME%"
-
-if "%SANDBOX_DISK_PATH%"=="" if exist "%SANDBOX_METADATA%" (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' | ConvertFrom-Json).artifact_path"`) do set "SANDBOX_DISK_PATH=%%i"
-)
-if "%SANDBOX_DISK_PATH%"=="" (
-    echo.
-    echo   No sandbox disk artifact found.
-    echo   Run 'devclaw sandbox build %SANDBOX_DIR%' first or pass a disk path.
-    echo.
-    exit /b 1
-)
-for %%i in ("%SANDBOX_DISK_PATH%") do set "SANDBOX_DISK_NAME=%%~nxi"
-
-where aca >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo   aca CLI not found.
-    echo   Install it first, then run:
-    echo     az group create --name "%SANDBOX_RG%" --location "%SANDBOX_REGION%"
-    echo     aca sandboxgroup create -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --location "%SANDBOX_REGION%" --set-config
-    echo     aca sandboxgroup identity assign --group "%SANDBOX_GROUP%" --system-assigned
-    echo     aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
-    if not "%SANDBOX_EMAIL%"=="" echo     aca sandbox port add --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% --port 18789 --email "%SANDBOX_EMAIL%"
-    echo.
-    exit /b 1
-)
+for /f "tokens=*" %%i in ('call azd env get-value AZURE_SUBSCRIPTION_ID 2^>nul') do set "SANDBOX_SUBSCRIPTION=%%i"
+if "%SANDBOX_SUBSCRIPTION%"=="" for /f "tokens=*" %%i in ('az account show --query id -o tsv 2^>nul') do set "SANDBOX_SUBSCRIPTION=%%i"
+set "SANDBOX_IMAGE=%7"
+if "%SANDBOX_IMAGE%"=="" set "SANDBOX_IMAGE=%SANDBOX_SOURCE_IMAGE%"
+if "%SANDBOX_IMAGE%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_SOURCE_IMAGE 2^>nul') do set "SANDBOX_IMAGE=%%i"
+if "%SANDBOX_IMAGE%"=="" for /f "tokens=*" %%i in ('call azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2^>nul') do set "SANDBOX_IMAGE=%%i"
+for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_DISK_NAME 2^>nul') do set "SANDBOX_DISK_NAME=%%i"
+for /f "tokens=*" %%i in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "GIT_COMMIT=%%i"
+if "%GIT_COMMIT%"=="" set "GIT_COMMIT=unknown"
+if "%SANDBOX_DISK_NAME%"=="" for /f "tokens=*" %%i in ('git -C "%~dp0" rev-parse --short HEAD 2^>nul') do set "SHORT_SHA=%%i"
+if "%SHORT_SHA%"=="" set "SHORT_SHA=nogit"
+if "%SANDBOX_DISK_NAME%"=="" set "SANDBOX_DISK_NAME=openclaw-%SANDBOX_SQUAD%-%SANDBOX_REGION%-%SHORT_SHA%"
 
 echo.
-echo   Registering Sandbox artifact with ACA Sandbox...
+echo   Registering Sandbox disk image in ACA...
+where aca >nul 2>&1
+if errorlevel 1 (
+    echo   ACA CLI [aca] not found.
+    echo   Install the ACA CLI to manage sandbox groups and disk images.
+    exit /b 1
+)
 call az group create --name "%SANDBOX_RG%" --location "%SANDBOX_REGION%" >nul
-call aca sandboxgroup create -g "%SANDBOX_RG%" --name "%SANDBOX_GROUP%" --location "%SANDBOX_REGION%" --set-config
-call aca sandboxgroup identity assign --group "%SANDBOX_GROUP%" --system-assigned
+call aca sandboxgroup create -g "%SANDBOX_RG%" --name "sg-%SANDBOX_SQUAD%" --location "%SANDBOX_REGION%" --set-config
+call aca sandboxgroup identity assign --group "sg-%SANDBOX_SQUAD%" --system-assigned
+if "%SANDBOX_IMAGE%"=="" (
+    set "ACR_LOGIN_SERVER="
+    for /f "tokens=*" %%i in ('call azd env get-value AZURE_CONTAINER_REGISTRY_ENDPOINT 2^>nul') do set "ACR_LOGIN_SERVER=%%i"
+    if "%ACR_LOGIN_SERVER%"=="" for /f "tokens=*" %%i in ('az acr list -g "%SANDBOX_RG%" --query "[0].loginServer" -o tsv 2^>nul') do set "ACR_LOGIN_SERVER=%%i"
+    if "%ACR_LOGIN_SERVER%"=="" (
+        echo   Unable to resolve Azure Container Registry endpoint for sandbox image build.
+        echo   Set SANDBOX_SOURCE_IMAGE to a CI-built image, or run devclaw up/deploy first.
+        exit /b 1
+    )
+    for /f "tokens=1 delims=." %%i in ("%ACR_LOGIN_SERVER%") do set "ACR_NAME=%%i"
+    set "SANDBOX_IMAGE=%ACR_LOGIN_SERVER%/openclaw-azure/openclaw-sandbox-core:sandbox-%SHORT_SHA%"
+    echo   Building sandbox runtime image in ACR ^(CI-compatible, no local Docker^)...
+    call az acr build -r "%ACR_NAME%" -f "%~dp0src\Dockerfile.sandbox" --platform linux/amd64 -t "%SANDBOX_IMAGE%" "%~dp0src" --no-logs
+    if errorlevel 1 exit /b 1
+)
+python "%~dp0scripts\register-sandbox-disk.py" --subscription "%SANDBOX_SUBSCRIPTION%" --resource-group "%SANDBOX_RG%" --sandbox-group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --disk-name "%SANDBOX_DISK_NAME%" --image "%SANDBOX_IMAGE%" --metadata-path "%SANDBOX_METADATA%" --label squad=%SANDBOX_SQUAD% --label git_commit=%GIT_COMMIT% --label source=devclaw
+if errorlevel 1 exit /b 1
+if exist "%SANDBOX_METADATA%" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "(Get-Content '%SANDBOX_METADATA%' -Raw | ConvertFrom-Json).id"`) do set "DISK_ID=%%i"
+    if not "%SANDBOX_DISK_NAME%"=="" call azd env set SANDBOX_DISK_NAME "%SANDBOX_DISK_NAME%" >nul 2>&1
+    if not "%DISK_ID%"=="" call azd env set SANDBOX_DISK_IMAGE_ID "%DISK_ID%" >nul 2>&1
+    if not "%SANDBOX_IMAGE%"=="" call azd env set SANDBOX_SOURCE_IMAGE "%SANDBOX_IMAGE%" >nul 2>&1
+    echo   Sandbox disk registered as %SANDBOX_DISK_NAME%.
+    if not "%DISK_ID%"=="" echo   ACA resource id: %DISK_ID%
+)
 set "SANDBOX_COPILOT_PAT=%SANDBOX_GITHUB_COPILOT_PAT%"
 if "%SANDBOX_COPILOT_PAT%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_GITHUB_COPILOT_PAT 2^>nul') do set "SANDBOX_COPILOT_PAT=%%i"
 set "SANDBOX_COPILOT_CRED_ID="
 for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID 2^>nul') do set "SANDBOX_COPILOT_CRED_ID=%%i"
+set "SANDBOX_CREDENTIAL_ARGS="
 if not "%SANDBOX_COPILOT_PAT%"=="" (
     echo %SANDBOX_COPILOT_PAT%| findstr /b "github_pat_" >nul
     if errorlevel 1 (
@@ -448,22 +437,58 @@ if not "%SANDBOX_COPILOT_PAT%"=="" (
     )
     if "%SANDBOX_COPILOT_CRED_ID%"=="" (
         echo   Creating GitHub Copilot credential on sandbox group...
-        for /f "usebackq delims=" %%i in (`aca sandboxgroup credential create --group "%SANDBOX_GROUP%" --type github-copilot --token "%SANDBOX_COPILOT_PAT%" -o json`) do set "COPILOT_CRED_JSON=%%i"
+        for /f "usebackq delims=" %%i in (`aca sandboxgroup credential create --group "sg-%SANDBOX_SQUAD%" --type github-copilot --token "%SANDBOX_COPILOT_PAT%" -o json`) do set "COPILOT_CRED_JSON=%%i"
         for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { ((ConvertFrom-Json '%COPILOT_CRED_JSON%').id) } catch { '' }"`) do set "SANDBOX_COPILOT_CRED_ID=%%i"
         if not "%SANDBOX_COPILOT_CRED_ID%"=="" call azd env set SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID "%SANDBOX_COPILOT_CRED_ID%" >nul 2>&1
     )
+    if not "%SANDBOX_COPILOT_CRED_ID%"=="" set "SANDBOX_CREDENTIAL_ARGS=--credential %SANDBOX_COPILOT_CRED_ID%"
 )
-if "%SANDBOX_COPILOT_CRED_ID%"=="" (
-    call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --label app=openclaw --label env=%SQUAD_NAME%
+set "SANDBOX_DISK_ID=%DISK_ID%"
+if "%SANDBOX_DISK_ID%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_DISK_IMAGE_ID 2^>nul') do set "SANDBOX_DISK_ID=%%i"
+set "SANDBOX_DISK_ARGS=--disk %SANDBOX_DISK_NAME%"
+if not "%SANDBOX_DISK_ID%"=="" set "SANDBOX_DISK_ARGS=--disk-id %SANDBOX_DISK_ID%"
+if "%SANDBOX_CREDENTIAL_ARGS%"=="" (
+    call aca sandbox create --group "sg-%SANDBOX_SQUAD%" %SANDBOX_DISK_ARGS% --label app=openclaw --label env=%SANDBOX_SQUAD%
 ) else (
-    call aca sandbox create --group "%SANDBOX_GROUP%" --disk "%SANDBOX_DISK_NAME%" --credential "%SANDBOX_COPILOT_CRED_ID%" --label app=openclaw --label env=%SQUAD_NAME%
+    call aca sandbox create --group "sg-%SANDBOX_SQUAD%" %SANDBOX_DISK_ARGS% %SANDBOX_CREDENTIAL_ARGS% --label app=openclaw --label env=%SANDBOX_SQUAD%
 )
-if not "%SANDBOX_EMAIL%"=="" call aca sandbox port add --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME% --port 18789 --email "%SANDBOX_EMAIL%"
-call aca sandbox get --group "%SANDBOX_GROUP%" -l app=openclaw,env=%SQUAD_NAME%
-call azd env set SANDBOX_DISK_IMAGE_PATH "%SANDBOX_DISK_PATH%" >nul 2>&1
-echo   Sandbox upload complete for %SQUAD_NAME%.
+set "SANDBOX_OPENAI_ENDPOINT="
+for /f "tokens=*" %%i in ('call azd env get-value AZURE_OPENAI_ENDPOINT 2^>nul') do set "SANDBOX_OPENAI_ENDPOINT=%%i"
+if not "%SANDBOX_OPENAI_ENDPOINT%"=="" (
+    set "SANDBOX_OPENAI_BASE_URL=%SANDBOX_OPENAI_ENDPOINT%/openai/v1/"
+    if "%SANDBOX_OPENAI_ENDPOINT:~-1%"=="/" set "SANDBOX_OPENAI_BASE_URL=%SANDBOX_OPENAI_ENDPOINT%openai/v1/"
+    echo   Bootstrapping OpenClaw inside sandbox...
+    call aca sandbox exec --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% --command "sh -lc 'nohup env OPENAI_BASE_URL=%SANDBOX_OPENAI_BASE_URL% AZURE_OPENAI_AUTH=managed-identity /opt/entrypoint.sh >/tmp/openclaw-bootstrap.log 2>&1 </dev/null &'"
+)
+if not "%SANDBOX_EMAIL%"=="" call aca sandbox port add --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% --port 18789 --email "%SANDBOX_EMAIL%"
+set "SANDBOX_ENDPOINT="
+set "SANDBOX_PORTS_JSON="
+for /f "usebackq delims=" %%i in (`aca sandbox port list --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% -o json 2^>nul`) do set "SANDBOX_PORTS_JSON=%%i"
+if not "%SANDBOX_PORTS_JSON%"=="" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$items = ConvertFrom-Json @'%SANDBOX_PORTS_JSON%'@; if ($items -isnot [System.Array]) { $items = @($items) }; foreach ($item in $items) { if ($item.url) { Write-Output ($item.url.TrimEnd('/')); break }; if ($item.endpoint) { Write-Output ($item.endpoint.TrimEnd('/')); break }; $host = $item.fqdn; if (-not $host) { $host = $item.hostName }; if (-not $host) { $host = $item.hostname }; if (-not $host) { $host = $item.dnsName }; if ($host) { Write-Output ('https://' + $host.TrimEnd('/')); break } }"`) do set "SANDBOX_ENDPOINT=%%i"
+)
+if not "%SANDBOX_ENDPOINT%"=="" (
+    echo   Waiting for sandbox endpoint readiness: %SANDBOX_ENDPOINT%/healthz
+    set "SANDBOX_READY="
+    for /l %%n in (1,1,24) do (
+        for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri '%SANDBOX_ENDPOINT%/healthz' -Method GET -TimeoutSec 8 -UseBasicParsing; [int]$r.StatusCode } catch { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { [int]$_.Exception.Response.StatusCode.value__ } else { 0 } }"`) do set "PROBE_CODE=%%i"
+        if "%PROBE_CODE%"=="200" set "SANDBOX_READY=1"
+        if "%PROBE_CODE%"=="401" set "SANDBOX_READY=1"
+        if "%PROBE_CODE%"=="403" set "SANDBOX_READY=1"
+        if "%PROBE_CODE%"=="404" set "SANDBOX_READY=1"
+        if not "%SANDBOX_READY%"=="" goto :sandbox_ready
+        powershell -NoProfile -Command "Start-Sleep -Seconds 5" >nul
+    )
+    echo   Sandbox endpoint probe never became routable ^(last code: %PROBE_CODE%^).
+    exit /b 1
+)
+:sandbox_ready
+call aca sandbox get --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% >nul 2>&1
 echo.
 exit /b 0
+
+:sandbox_upload
+goto sandbox_build
 
 :sandbox_delete
 set "SQUAD_NAME=%3"
@@ -525,10 +550,10 @@ echo   devclaw sandbox
 echo.
 echo   Subcommands:
 echo     devclaw sandbox init ^<squad^> [region] [openai-region]   Create local Sandbox workspace
-echo     devclaw sandbox build [dir] [format] [region] [squad]
-echo     devclaw sandbox upload ^<squad^> [region] [disk-path] [rg] [email]
+echo     devclaw sandbox build ^<squad^> [region] [rg] [email] [image]
+echo     devclaw sandbox upload ^<squad^> [region] [rg] [email] [image]
 echo     devclaw sandbox delete ^<squad^> [region] [rg]
-echo     devclaw sandbox status [dir]
+echo     devclaw sandbox status ^<squad^> [rg]
 echo.
 exit /b 0
 

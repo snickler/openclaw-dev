@@ -213,14 +213,11 @@ squad)
 
 sandbox)
     SUBCOMMAND="${2:-status}"
-    case "$SUBCOMMAND" in
-    build|status)
-        SANDBOX_DIR="${3:-$ROOT/_local/sandbox}"
-        ;;
-    *)
-        SANDBOX_DIR="$ROOT/_local/sandbox"
-        ;;
-    esac
+    SANDBOX_DIR="${SANDBOX_DIR:-$(azd env get-value SANDBOX_DIR 2>/dev/null || true)}"
+    SANDBOX_DIR="${SANDBOX_DIR:-$ROOT/_local/sandbox}"
+    if [ "$SUBCOMMAND" = "status" ] && [ -n "${3:-}" ]; then
+        SANDBOX_DIR="$3"
+    fi
     SANDBOX_METADATA="$SANDBOX_DIR/disk-image-metadata.json"
 
     case "$SUBCOMMAND" in
@@ -238,67 +235,73 @@ sandbox)
         azd env set AZURE_OPENAI_LOCATION "$SANDBOX_OPENAI_REGION" >/dev/null 2>&1 || true
         azd env set SANDBOX_DIR "$SANDBOX_DIR" >/dev/null 2>&1 || true
         echo -e "  ${G}Sandbox workspace ready at ${SANDBOX_DIR}.${N}"
-        echo -e "  ${D}Run 'devclaw sandbox build ${SANDBOX_DIR}' to generate the disk artifact.${N}"
+        echo -e "  ${D}Run 'devclaw sandbox build' to register the ACA sandbox disk image.${N}"
         echo ""
         ;;
-    build)
-        SANDBOX_FORMAT="${4:-qcow2}"
-        SANDBOX_REGION="${5:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
-        SANDBOX_SQUAD="${6:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
-
-        echo ""
-        echo -e "  ${C}Building Sandbox disk artifact...${N}"
-        bash "$ROOT/scripts/build-disk-image.sh" "$SANDBOX_DIR" "$SANDBOX_FORMAT" "$SANDBOX_REGION" "$SANDBOX_SQUAD"
-
-        if [ -f "$SANDBOX_METADATA" ]; then
-            DISK_PATH=$(awk -F'"' '/"artifact_path"/ {print $4}' "$SANDBOX_METADATA")
-            DISK_HASH=$(awk -F'"' '/"hash_sha256"/ {print $4}' "$SANDBOX_METADATA")
-            [ -n "$DISK_PATH" ] && azd env set SANDBOX_DISK_IMAGE_PATH "$DISK_PATH" >/dev/null 2>&1 || true
-            [ -n "$DISK_HASH" ] && azd env set SANDBOX_DISK_IMAGE_HASH "$DISK_HASH" >/dev/null 2>&1 || true
-            echo -e "  ${G}Sandbox metadata captured in azd env (SANDBOX_DISK_IMAGE_PATH/HASH).${N}"
-        fi
-        echo ""
-        ;;
-    upload)
+    build|upload)
         SANDBOX_SQUAD="${3:-$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)}"
         SANDBOX_REGION="${4:-$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)}"
-        SANDBOX_DISK_PATH="${5:-}"
-        SANDBOX_RG="${6:-$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo rg-$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo $SANDBOX_SQUAD))}"
-        SANDBOX_EMAIL="${7:-$(az account show --query user.name -o tsv 2>/dev/null || echo "")}"
+        SANDBOX_RG="${5:-$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo rg-$(azd env get-value AZURE_ENV_NAME 2>/dev/null || echo $SANDBOX_SQUAD))}"
+        SANDBOX_EMAIL="${6:-$(az account show --query user.name -o tsv 2>/dev/null || echo "")}"
         SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
-
-        if [ -z "$SANDBOX_DISK_PATH" ] && [ -f "$SANDBOX_METADATA" ]; then
-            SANDBOX_DISK_PATH=$(awk -F'"' '/"artifact_path"/ {print $4}' "$SANDBOX_METADATA")
+        SANDBOX_DISK_NAME="${SANDBOX_DISK_NAME:-$(azd env get-value SANDBOX_DISK_NAME 2>/dev/null || echo "")}"
+        SANDBOX_SUBSCRIPTION="${SANDBOX_SUBSCRIPTION:-$(azd env get-value AZURE_SUBSCRIPTION_ID 2>/dev/null || echo "")}"
+        SANDBOX_IMAGE="${7:-${SANDBOX_SOURCE_IMAGE:-$(azd env get-value SANDBOX_SOURCE_IMAGE 2>/dev/null || azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2>/dev/null || echo "")}}"
+        if [ -z "$SANDBOX_SUBSCRIPTION" ]; then
+            SANDBOX_SUBSCRIPTION="$(az account show --query id -o tsv 2>/dev/null || echo "")"
         fi
-        if [ -z "$SANDBOX_DISK_PATH" ]; then
-            echo ""
-            echo -e "  ${R}No sandbox disk artifact found.${N}"
-            echo -e "  ${D}Run 'devclaw sandbox build ${SANDBOX_DIR}' first or pass a disk path.${N}"
-            echo ""
-            exit 1
-        fi
-
-        SANDBOX_DISK_NAME="$(basename "$SANDBOX_DISK_PATH")"
-        if ! command -v aca >/dev/null 2>&1; then
-            echo ""
-            echo -e "  ${Y}aca CLI not found.${N}"
-            echo -e "  ${D}Install it first, then run:${N}"
-            echo "    az group create --name \"$SANDBOX_RG\" --location \"$SANDBOX_REGION\""
-            echo "    aca sandboxgroup create -g \"$SANDBOX_RG\" --name \"$SANDBOX_GROUP\" --location \"$SANDBOX_REGION\" --set-config"
-            echo "    aca sandboxgroup identity assign --group \"$SANDBOX_GROUP\" --system-assigned"
-            echo "    aca sandbox create --group \"$SANDBOX_GROUP\" --disk \"$SANDBOX_DISK_NAME\" --label app=openclaw --label env=$SANDBOX_SQUAD"
-            if [ -n "$SANDBOX_EMAIL" ]; then
-                echo "    aca sandbox port add --group \"$SANDBOX_GROUP\" -l app=openclaw,env=$SANDBOX_SQUAD --port 18789 --email \"$SANDBOX_EMAIL\""
-            fi
-            echo ""
-            exit 1
+        if [ -z "$SANDBOX_DISK_NAME" ]; then
+            SHORT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
+            SANDBOX_DISK_NAME="openclaw-${SANDBOX_SQUAD}-${SANDBOX_REGION}-${SHORT_SHA}"
         fi
 
         echo ""
-        echo -e "  ${C}Registering Sandbox artifact with ACA Sandbox...${N}"
+        echo -e "  ${C}Registering Sandbox disk image in ACA...${N}"
+        if ! command -v aca >/dev/null 2>&1; then
+            echo -e "  ${R}ACA CLI (aca) not found.${N}"
+            echo -e "  ${D}Install the ACA CLI to manage sandbox groups and disk images.${N}"
+            exit 1
+        fi
         az group create --name "$SANDBOX_RG" --location "$SANDBOX_REGION" >/dev/null
         aca sandboxgroup create -g "$SANDBOX_RG" --name "$SANDBOX_GROUP" --location "$SANDBOX_REGION" --set-config
         aca sandboxgroup identity assign --group "$SANDBOX_GROUP" --system-assigned
+
+        if [ -z "$SANDBOX_IMAGE" ]; then
+            ACR_LOGIN_SERVER="$(azd env get-value AZURE_CONTAINER_REGISTRY_ENDPOINT 2>/dev/null || echo "")"
+            if [ -z "$ACR_LOGIN_SERVER" ]; then
+                ACR_LOGIN_SERVER="$(az acr list -g "$SANDBOX_RG" --query "[0].loginServer" -o tsv 2>/dev/null || echo "")"
+            fi
+            if [ -z "$ACR_LOGIN_SERVER" ]; then
+                echo -e "  ${R}Unable to resolve Azure Container Registry endpoint for sandbox image build.${N}"
+                echo -e "  ${D}Set SANDBOX_SOURCE_IMAGE to a CI-built image, or run devclaw up/deploy first.${N}"
+                exit 1
+            fi
+            SANDBOX_IMAGE="${ACR_LOGIN_SERVER}/openclaw-azure/openclaw-sandbox-core:sandbox-${SHORT_SHA}"
+            ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
+            echo -e "  ${C}Building sandbox runtime image in ACR (CI-compatible, no local Docker)...${N}"
+            az acr build -r "$ACR_NAME" -f "$ROOT/src/Dockerfile.sandbox" --platform linux/amd64 -t "$SANDBOX_IMAGE" "$ROOT/src" --no-logs
+        fi
+
+        python "$ROOT/scripts/register-sandbox-disk.py" \
+            --subscription "$SANDBOX_SUBSCRIPTION" \
+            --resource-group "$SANDBOX_RG" \
+            --sandbox-group "$SANDBOX_GROUP" \
+            --region "$SANDBOX_REGION" \
+            --disk-name "$SANDBOX_DISK_NAME" \
+            --image "$SANDBOX_IMAGE" \
+            --metadata-path "$SANDBOX_METADATA" \
+            --label squad="$SANDBOX_SQUAD" \
+            --label git_commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" \
+            --label source=devclaw
+
+        if [ -f "$SANDBOX_METADATA" ]; then
+            DISK_ID=$(python -c "import json, pathlib; data = json.loads(pathlib.Path(r'$SANDBOX_METADATA').read_text(encoding='utf-8')); print(data.get('id', ''))")
+            [ -n "$SANDBOX_DISK_NAME" ] && azd env set SANDBOX_DISK_NAME "$SANDBOX_DISK_NAME" >/dev/null 2>&1 || true
+            [ -n "$DISK_ID" ] && azd env set SANDBOX_DISK_IMAGE_ID "$DISK_ID" >/dev/null 2>&1 || true
+            [ -n "$SANDBOX_IMAGE" ] && azd env set SANDBOX_SOURCE_IMAGE "$SANDBOX_IMAGE" >/dev/null 2>&1 || true
+            echo -e "  ${G}Sandbox disk registered as ${SANDBOX_DISK_NAME}.${N}"
+            [ -n "$DISK_ID" ] && echo -e "  ${D}ACA resource id: ${DISK_ID}${N}"
+        fi
         SANDBOX_COPILOT_PAT="${SANDBOX_GITHUB_COPILOT_PAT:-$(azd env get-value SANDBOX_GITHUB_COPILOT_PAT 2>/dev/null || echo "")}"
         SANDBOX_COPILOT_CRED_ID="$(azd env get-value SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID 2>/dev/null || echo "")"
         SANDBOX_CREDENTIAL_ARGS=()
@@ -319,13 +322,61 @@ sandbox)
             fi
             [ -n "$SANDBOX_COPILOT_CRED_ID" ] && SANDBOX_CREDENTIAL_ARGS=(--credential "$SANDBOX_COPILOT_CRED_ID")
         fi
-        aca sandbox create --group "$SANDBOX_GROUP" --disk "$SANDBOX_DISK_NAME" --label app=openclaw --label env="$SANDBOX_SQUAD" "${SANDBOX_CREDENTIAL_ARGS[@]}"
-        if [ -n "$SANDBOX_EMAIL" ]; then
-            aca sandbox port add --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" --port 18789 --email "$SANDBOX_EMAIL"
+        SANDBOX_DISK_ID="${DISK_ID:-$(azd env get-value SANDBOX_DISK_IMAGE_ID 2>/dev/null || echo "")}"
+        SANDBOX_DISK_ARGS=(--disk "$SANDBOX_DISK_NAME")
+        if [ -n "$SANDBOX_DISK_ID" ]; then
+            SANDBOX_DISK_ARGS=(--disk-id "$SANDBOX_DISK_ID")
         fi
-        aca sandbox get --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD"
-        azd env set SANDBOX_DISK_IMAGE_PATH "$SANDBOX_DISK_PATH" >/dev/null 2>&1 || true
-        echo -e "  ${G}Sandbox upload complete for ${SANDBOX_SQUAD}.${N}"
+        aca sandbox create --group "$SANDBOX_GROUP" "${SANDBOX_DISK_ARGS[@]}" --label app=openclaw --label env="$SANDBOX_SQUAD" "${SANDBOX_CREDENTIAL_ARGS[@]}"
+        SANDBOX_OPENAI_ENDPOINT="${SANDBOX_OPENAI_ENDPOINT:-$(azd env get-value AZURE_OPENAI_ENDPOINT 2>/dev/null || echo "")}"
+        if [ -n "$SANDBOX_OPENAI_ENDPOINT" ]; then
+            SANDBOX_OPENAI_BASE_URL="${SANDBOX_OPENAI_ENDPOINT%/}/openai/v1/"
+            echo -e "  ${C}Bootstrapping OpenClaw inside sandbox...${N}"
+            aca sandbox exec --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" \
+                --command "sh -lc 'nohup env OPENAI_BASE_URL=${SANDBOX_OPENAI_BASE_URL} AZURE_OPENAI_AUTH=managed-identity /opt/entrypoint.sh >/tmp/openclaw-bootstrap.log 2>&1 </dev/null &'"
+        fi
+        if [ -n "$SANDBOX_EMAIL" ]; then
+            aca sandbox port add --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" --port 18789 --email "$SANDBOX_EMAIL" >/dev/null 2>&1 || true
+        fi
+        SANDBOX_PORTS_JSON="$(aca sandbox port list --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" -o json 2>/dev/null || true)"
+        SANDBOX_ENDPOINT=""
+        if [ -n "$SANDBOX_PORTS_JSON" ]; then
+            SANDBOX_ENDPOINT="$(SANDBOX_PORTS_JSON="$SANDBOX_PORTS_JSON" python -c "import json, os
+items = json.loads(os.environ.get('SANDBOX_PORTS_JSON') or '[]')
+if isinstance(items, dict):
+    items = [items]
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    for key in ('url', 'endpoint'):
+        val = item.get(key)
+        if val:
+            print(str(val).rstrip('/'))
+            raise SystemExit(0)
+    host = item.get('fqdn') or item.get('hostName') or item.get('hostname') or item.get('dnsName')
+    if host:
+        print(f'https://{str(host).rstrip('/')}')
+        raise SystemExit(0)")"
+        fi
+        if [ -n "$SANDBOX_ENDPOINT" ] && command -v curl >/dev/null 2>&1; then
+            echo -e "  ${D}Waiting for sandbox endpoint readiness: ${SANDBOX_ENDPOINT}/healthz${N}"
+            READY=0
+            for attempt in $(seq 1 24); do
+                CODE="$(curl -ksS -o /dev/null -w '%{http_code}' "${SANDBOX_ENDPOINT}/healthz" || true)"
+                if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ] || [ "$CODE" = "404" ]; then
+                    READY=1
+                    break
+                fi
+                sleep 5
+            done
+            if [ "$READY" -ne 1 ]; then
+                echo -e "  ${R}Sandbox endpoint probe never became routable (last code: ${CODE:-none}).${N}"
+                echo -e "  ${D}Last known endpoint: ${SANDBOX_ENDPOINT}${N}"
+                exit 1
+            fi
+            echo -e "  ${G}Sandbox endpoint is routable.${N}"
+        fi
+        aca sandbox get --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" >/dev/null 2>&1 || true
         echo ""
         ;;
     delete)
@@ -376,10 +427,10 @@ sandbox)
         echo ""
         echo "  Subcommands:"
         echo "    devclaw sandbox init [squad] [region] [openai-region]"
-        echo "    devclaw sandbox build [dir] [format] [region] [squad]"
-        echo "    devclaw sandbox upload [squad] [region] [disk-path] [rg] [email]"
+        echo "    devclaw sandbox build [squad] [region] [rg] [email] [image]"
+        echo "    devclaw sandbox upload [squad] [region] [rg] [email] [image]"
         echo "    devclaw sandbox delete [squad] [region] [rg]"
-        echo "    devclaw sandbox status [dir]"
+        echo "    devclaw sandbox status [squad] [rg]"
         echo ""
         ;;
     esac
@@ -438,7 +489,7 @@ up)
     echo ""
     if [ "${HOST_MODE,,}" = "sandbox" ]; then
         echo -e "  ${G}Sandbox infrastructure provisioned.${N}"
-        echo -e "  ${D}Run 'devclaw sandbox build' then 'devclaw sandbox upload' to create the ACA sandbox runtime.${N}"
+        echo -e "  ${D}Run 'devclaw sandbox build' to create the ACA sandbox runtime.${N}"
     else
         echo -e "  ${G}OpenClaw deployed!${N}"
         echo -e "  ${D}Run 'devclaw test' to verify it's working.${N}"

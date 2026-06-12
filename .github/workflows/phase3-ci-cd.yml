@@ -2,6 +2,10 @@ name: Phase 3 CI/CD
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CI_SANDBOX_RESOURCE_GROUP: ${{ vars.CI_SANDBOX_RESOURCE_GROUP || 'rg-squad-core' }}
+  CI_SANDBOX_GROUP: ${{ vars.CI_SANDBOX_GROUP || 'sg-squad-core' }}
+  CI_SANDBOX_REGION: ${{ vars.CI_SANDBOX_REGION || 'eastus2' }}
+  SANDBOX_IMAGE_REPOSITORY: openclaw-azure/openclaw-sandbox-core
 
 on:
   workflow_dispatch:
@@ -71,7 +75,7 @@ jobs:
         run: .\scripts\qa\phase12-smoke.ps1 -Mode Static -NoFileReport
 
   prepare-regions:
-    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
+    if: ((github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule') && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != ''
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.regions.outputs.matrix }}
@@ -92,7 +96,7 @@ jobs:
 
   build-and-sign:
     needs: validate
-    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
+    if: ((github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule') && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,11 +108,65 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install qemu utilities
-        run: sudo apt-get update && sudo apt-get install -y qemu-utils
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Build sandbox artifact
-        run: bash ./scripts/build-disk-image.sh ./_local/sandbox qcow2 eastus2 core
+      - name: Validate sandbox registration targets
+        shell: bash
+        run: |
+          if ! [[ "$CI_SANDBOX_RESOURCE_GROUP" =~ ^rg-[a-z0-9-]{2,60}$ ]]; then
+            echo "Invalid CI_SANDBOX_RESOURCE_GROUP: $CI_SANDBOX_RESOURCE_GROUP" >&2
+            exit 1
+          fi
+          if ! [[ "$CI_SANDBOX_GROUP" =~ ^sg-[a-z0-9-]{2,60}$ ]]; then
+            echo "Invalid CI_SANDBOX_GROUP: $CI_SANDBOX_GROUP" >&2
+            exit 1
+          fi
+          case "$CI_SANDBOX_REGION" in
+            australiaeast|eastasia|eastus|eastus2|japaneast|koreacentral|southindia|swedencentral|switzerlandnorth|uksouth|westcentralus)
+              ;;
+            *)
+              echo "Unsupported CI_SANDBOX_REGION: $CI_SANDBOX_REGION" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Register ACA sandbox disk image
+        if: env.HAS_AZURE_BLOB_PUBLISH == 'true'
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            set -euo pipefail
+            acr_login_server=$(az acr list --resource-group "$CI_SANDBOX_RESOURCE_GROUP" --query "[0].loginServer" -o tsv)
+            if [ -z "$acr_login_server" ]; then
+              echo "No ACR found in resource group '$CI_SANDBOX_RESOURCE_GROUP'" >&2
+              exit 1
+            fi
+            acr_name="${acr_login_server%%.*}"
+            sandbox_image="${acr_login_server}/${SANDBOX_IMAGE_REPOSITORY}:ci-${{ github.run_id }}"
+
+            az acr build \
+              --registry "$acr_name" \
+              --platform linux/amd64 \
+              --file "./src/Dockerfile.sandbox" \
+              --image "$sandbox_image" \
+              "./src"
+
+            python3 ./scripts/register-sandbox-disk.py \
+              --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
+              --resource-group "$CI_SANDBOX_RESOURCE_GROUP" \
+              --sandbox-group "$CI_SANDBOX_GROUP" \
+              --region "$CI_SANDBOX_REGION" \
+              --disk-name "openclaw-ci-${{ github.run_id }}" \
+              --image "$sandbox_image" \
+              --metadata-path "./_local/sandbox/disk-image-metadata.json" \
+              --label squad=core \
+              --label source=ci \
+              --label git_commit=${{ github.sha }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -130,8 +188,10 @@ jobs:
           python - <<'PY'
           import json, os, pathlib
           targets = [r.strip() for r in os.environ["TARGET_REGIONS"].split(",") if r.strip()]
+          metadata = json.loads(pathlib.Path("./_local/sandbox/disk-image-metadata.json").read_text(encoding="utf-8"))
           payload = {
               "artifact": "_local/sandbox/disk-image-metadata.json",
+              "image": metadata.get("source_image", ""),
               "signature": "_local/sandbox/disk-image-metadata.sig",
               "certificate": "_local/sandbox/disk-image-metadata.pem",
               "targets": targets,
@@ -152,17 +212,11 @@ jobs:
             ./_local/sandbox/disk-image-metadata.pem
             ./_local/sandbox/phase3-distribution.json
 
-      - name: Upload CI-built sandbox disk image
-        uses: actions/upload-artifact@v4
-        with:
-          name: sandbox-disk-image
-          path: ./_local/sandbox/*.qcow2
-
   distribute:
     needs:
       - build-and-sign
       - prepare-regions
-    if: (github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule'
+    if: ((github.event_name == 'workflow_dispatch' && inputs.build_sandbox_image) || github.event_name == 'schedule') && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_STORAGE_ACCOUNT != '' && secrets.AZURE_STORAGE_CONTAINER != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read

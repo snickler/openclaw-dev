@@ -20,3 +20,4 @@
 - 2026-06-11: Closed remaining hardening follow-up by pinning Docker base image to immutable digest and recording validation evidence.
 
 - 2026-06-11: Session closeout for hardening batch; AOAI RAI hardening (D-005), Docker digest pinning (D-017), and squad-aware ACA deployment (D-011) all verified and release-ready.
+- 2026-06-11: Assigned implementation lead for CI→ACA runtime remediation batch; scope includes full resolution of disk registration/runtime blockers with security+QA handoff readiness.

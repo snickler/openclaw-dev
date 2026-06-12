@@ -1,5 +1,4 @@
-# predeploy.ps1 — Configure Docker Hub credentials on ACR to avoid anonymous
-# pull rate limits during remote builds. Falls back to local Docker if available.
+# predeploy.ps1 — Configure Docker Hub credentials on ACR for remote CI-style builds.
 $ErrorActionPreference = "Stop"
 
 # Resolve resource group
@@ -12,69 +11,12 @@ if (-not $acrName) {
     $acrName = az acr list -g $rg --query "[0].name" -o tsv 2>$null
 }
 
-$rootDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$sandboxDir = Join-Path $rootDir "_local\sandbox"
-$sandboxMetadata = Join-Path $sandboxDir "disk-image-metadata.json"
 $sandboxMode = (azd env get-value ACA_SANDBOX_MODE 2>$null)
 if (-not $sandboxMode) { $sandboxMode = "sandbox" }
-$sandboxAutoBuild = (azd env get-value SANDBOX_AUTO_BUILD 2>$null)
-if (-not $sandboxAutoBuild) { $sandboxAutoBuild = "true" }
-$sandboxRegion = (azd env get-value AZURE_LOCATION 2>$null)
-if (-not $sandboxRegion) { $sandboxRegion = "eastus2" }
-$sandboxSquad = (azd env get-value SQUAD_NAME 2>$null)
-if (-not $sandboxSquad) { $sandboxSquad = "core" }
-
-function Test-SandboxMetadata {
-    if (-not (Test-Path $sandboxMetadata)) {
-        return $false
-    }
-
-    try {
-        $metadata = Get-Content $sandboxMetadata -Raw | ConvertFrom-Json
-    } catch {
-        Write-Host "[predeploy] Sandbox metadata file is not valid JSON."
-        return $false
-    }
-
-    if (-not $metadata.artifact_path -or -not $metadata.hash_sha256 -or -not (Test-Path $metadata.artifact_path)) {
-        Write-Host "[predeploy] Sandbox metadata missing artifact_path/hash_sha256 or artifact file."
-        return $false
-    }
-
-    $actualHash = (Get-FileHash -Path $metadata.artifact_path -Algorithm SHA256).Hash.ToLowerInvariant()
-    $expectedHash = "$($metadata.hash_sha256)".ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {
-        Write-Host "[predeploy] ERROR: Sandbox artifact hash mismatch."
-        return $false
-    }
-
-    if (-not $metadata.git_commit) {
-        Write-Host "[predeploy] Sandbox metadata missing git_commit."
-        return $false
-    }
-
-    azd env set SANDBOX_DISK_IMAGE_PATH $metadata.artifact_path *> $null
-    azd env set SANDBOX_DISK_IMAGE_HASH $expectedHash *> $null
-    Write-Host "[predeploy] Disk image validated (commit $($metadata.git_commit.Substring(0, [Math]::Min(8, $metadata.git_commit.Length))))"
-    return $true
-}
 
 if ($sandboxMode.ToLowerInvariant() -eq "sandbox") {
-    $verified = Test-SandboxMetadata
-    if (-not $verified) {
-        if ($sandboxAutoBuild.ToLowerInvariant() -eq "true") {
-            Write-Host "[predeploy] SANDBOX_AUTO_BUILD=true and metadata missing/invalid — building now."
-            & (Join-Path $rootDir "scripts\build-disk-image.ps1") -OutputDir $sandboxDir -DiskFormat "vhdx" -Region $sandboxRegion -Squad $sandboxSquad
-            if (-not (Test-SandboxMetadata)) {
-                Write-Host "[predeploy] ERROR: Auto-build completed but sandbox metadata is still invalid."
-                exit 1
-            }
-        } else {
-            Write-Host "[predeploy] Sandbox mode enabled but no verified local disk metadata found."
-            Write-Host "[predeploy] Auto-build is disabled. To re-enable:"
-            Write-Host "[predeploy]   azd env set SANDBOX_AUTO_BUILD true"
-        }
-    }
+    Write-Host "[predeploy] Sandbox mode enabled — ACA disk images are registered via the ACA build API."
+    Write-Host "[predeploy] Run 'devclaw sandbox build' or the CI workflow to create the sandbox disk image."
 }
 if (-not $acrName) {
     Write-Host "[predeploy] No ACR found — skipping Docker Hub credential setup"
@@ -106,7 +48,7 @@ if ($dockerUser -and $dockerToken) {
         Write-Host "[predeploy] Docker Hub credentials configured on ACR"
     } else {
         Write-Host "[predeploy] WARNING: Failed to configure Docker Hub credentials on ACR"
-        Write-Host "[predeploy]   If you hit rate limits, ensure Docker Desktop is running for local fallback"
+        Write-Host "[predeploy]   Set DOCKERHUB_USERNAME/DOCKERHUB_TOKEN and retry."
     }
 } else {
     Write-Host "[predeploy] No DOCKERHUB_USERNAME/DOCKERHUB_TOKEN in azd env — using anonymous pulls"
@@ -114,17 +56,5 @@ if ($dockerUser -and $dockerToken) {
     Write-Host "[predeploy]     azd env set DOCKERHUB_USERNAME <username>"
     Write-Host "[predeploy]     azd env set DOCKERHUB_TOKEN <access-token>"
 
-    # Check if local Docker is available as fallback
-    $dockerRunning = $false
-    try {
-        $null = docker info 2>$null
-        if ($LASTEXITCODE -eq 0) { $dockerRunning = $true }
-    } catch {}
-
-    if ($dockerRunning) {
-        Write-Host "[predeploy] Local Docker detected — will fall back to local build if remote hits rate limit"
-    } else {
-        Write-Host "[predeploy] WARNING: Local Docker not running. If ACR remote build hits Docker Hub rate limit,"
-        Write-Host "[predeploy]   start Docker Desktop and retry, or set DOCKERHUB_USERNAME/DOCKERHUB_TOKEN."
-    }
+    Write-Host "[predeploy] CI-first sandbox flow uses remote ACR builds only (no local image-build fallback)."
 }

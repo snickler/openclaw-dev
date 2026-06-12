@@ -72,7 +72,8 @@ not `devclaw test`.
 
 ### Disk image provisioning (required for ACA Sandbox — the default)
 
-**⚠️ Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). The template defaults to Sandbox mode, which requires a custom Node.js disk image with auth-proxy installed.
+**⚠️ Current state:** ACA Sandbox disk images are registered from a **CI-built ACR image** (`src/Dockerfile.sandbox`) using `devclaw sandbox build` (or the Phase 3 workflow). The flow is remote-build-first (ACR build + disk registration) with no local image-build fallback.
+Private-image registry auth is deterministic: `register-sandbox-disk.py` acquires short-lived ACR credentials via `az acr login --expose-token` and injects them into `aca sandboxgroup disk create`.
 
 **Decision: Option B (Automated disk image builder) — APPROVED**
 
@@ -82,7 +83,7 @@ The team has chosen **Option B: Automated disk image builder** (Decision D-025, 
 
 | Phase | Duration | Status | Owner | Deliverables |
 |-------|----------|--------|-------|--------------|
-| **1 – MVP** | 1–2 weeks | Backlog | TBD (Bishop/Hicks candidate) | `build-disk-image.sh`/`.ps1`, `devclaw sandbox init/upload/status/delete` |
+| **1 – MVP** | 1–2 weeks | Backlog | TBD (Bishop/Hicks candidate) | ACA disk build from Dockerfile, `devclaw sandbox init/build/status/delete` |
 | **2 – Auto-build** | 2–4 weeks | Backlog | TBD | Automated rebuild on deps; ACA integration |
 | **3 – CI/CD** | 4–8 weeks | In progress | TBD | GitHub Actions, artifact signing, multi-region distribution |
 
@@ -138,8 +139,14 @@ This deploys to standard Container Apps (stateful, Easy Auth + Teams support) in
 | `OPENCLAW_MIN_REPLICAS` | no | `1` | Minimum ACA replicas for the OpenClaw runtime |
 | `OPENCLAW_MAX_REPLICAS` | no | `3` | Maximum ACA replicas for the OpenClaw runtime (must be >= min) |
 | `ACA_SANDBOX_MODE` | no | `sandbox` | Host mode selector: `sandbox` (default) for ACA Sandbox (requires custom Node.js disk image provisioning); `standard` (legacy) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`). For Sandbox mode, see "Disk image provisioning" below; disk must be pre-built and registered with ACA Sandbox. |
-| `SANDBOX_DISK_NAME` | no | unset | Optional phase 1/2 input for sandbox runtime disk label/name. Keep empty for standard mode or when disk is provisioned externally. |
-| `SANDBOX_DISK_SNAPSHOT_ID` | no | unset | Optional phase 1/2 input for sandbox disk snapshot resource ID (used to carry disk contract through Bicep while ACA Sandbox APIs are still maturing). |
+| `SANDBOX_DISK_NAME` | no | unset | ACA Sandbox disk image resource name under `sandboxGroups/<group>/diskimages`. `devclaw sandbox build` sets it after registration. |
+| `SANDBOX_DISK_IMAGE_ID` | no | unset | ACA Sandbox disk image resource ID returned by `devclaw sandbox build`/CI registration. Useful for auditing and troubleshooting. |
+| `SANDBOX_SOURCE_IMAGE` | no | unset | Optional pre-built image ref for sandbox disk registration. If unset, `devclaw sandbox build` performs a remote `az acr build` of `src/Dockerfile.sandbox`. |
+
+### CI hardening (sandbox target protection)
+
+Phase 3 workflow no longer exposes `workflow_dispatch` inputs for sandbox target RG/group/region. It uses locked repo/org vars (`CI_SANDBOX_RESOURCE_GROUP`, `CI_SANDBOX_GROUP`, `CI_SANDBOX_REGION`) plus allowlist/regex validation before build/register steps.
+| `SANDBOX_DISK_SNAPSHOT_ID` | no | unset | Legacy phase 1/2 input for sandbox disk snapshot resource ID (kept for compatibility while ACA Sandbox APIs were still maturing). |
 | `SANDBOX_GITHUB_COPILOT_PAT` | no | unset | Optional fine-grained GitHub PAT (`github_pat_...`). When set, `devclaw sandbox upload` auto-creates a sandbox-group credential (`github-copilot`) and attaches it to the created sandbox. |
 | `SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID` | auto | unset | Cached credential ID created during `devclaw sandbox upload` when `SANDBOX_GITHUB_COPILOT_PAT` is provided. Reused on subsequent uploads to avoid duplicate credential creation. |
 | `USE_EXPRESS_ENV` | no | `false` | When set to `true`, Container Apps environment is created in Express mode (preview) for faster cold-start (~10–20s vs. ~30–60s). Only applicable when `ACA_SANDBOX_MODE=standard`. Supported regions include East Asia and West Central US. Express mode disables storage mounts, so session state does not persist across replica restarts. |

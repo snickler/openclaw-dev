@@ -44,38 +44,36 @@ This strategy balances **automation benefits** (one-command deployment, reproduc
 
 ---
 
-### Option B: Automated Disk Image Builder
+### Option B: ACA-Managed Disk Image Builder
 
-**Concept:** Create a `build-disk-image.sh` script (macOS/Linux) + PowerShell equivalent (Windows) that:
+**Concept:** Use the ACA Sandbox build API to upload a `src/` content package and build the disk image from `src/Dockerfile` inside ACA:
 
-1. Downloads or builds a minimal Linux image (Ubuntu 24.04 LTS / Debian 12)
-2. Installs Node.js, npm, git, ca-certificates, auth-proxy dependencies
-3. Copies auth-proxy (`auth-proxy.mjs`) and gateway-proxy into the image
-4. Bundles npm deps (if pre-caching is desired)
-5. Creates a qcow2 / raw disk image (~2–4 GB compressed, ~8–12 GB uncompressed)
-6. Outputs image + metadata (hash, size, dependencies) for Bicep/registry reference
+1. Package `src/` as a tar.gz content package
+2. Upload the content package to the ACA content-package API
+3. POST the Dockerfile content + content-package ID to the sandbox-group disk build API
+4. Poll until the disk image reports `Ready`
+5. Persist the ACA disk image ID/name for sandbox creation and audit
 
 **Pros:**
 - ✅ **Reproducibility:** Same script, same region, same image
-- ✅ **Automation-first:** Single command (`devclaw sandbox build`) or automatic during `devclaw up`
-- ✅ **Version control:** Script lives in repo; disk versions map to git tags/commits
-- ✅ **Scaling:** Build once per region/squad, cache in ACR or snapshot registry
-- ✅ **Squad-friendly:** CI/CD can pre-build images for each squad definition
-- ✅ **Low operational burden:** No manual snapshot creation; script → Bicep integration
-- ✅ **Clear upgrade path:** Update auth-proxy in Dockerfile → rebuild → re-deploy
+- ✅ **Automation-first:** Single command (`devclaw sandbox build`) or CI workflow
+- ✅ **Version control:** Dockerfile + content package inputs live in repo; versions map to git tags/commits
+- ✅ **Scaling:** CI can pre-build images for each squad/region definition
+- ✅ **Squad-friendly:** No local disk tooling required
+- ✅ **Low operational burden:** No manual snapshot creation; script → ACA build API
+- ✅ **Clear upgrade path:** Update auth-proxy in Dockerfile → rebuild in ACA → re-deploy
 
 **Cons:**
-- ❌ **Implementation complexity:** Medium (build script, qcow2 lib, Bicep integration, CI hookup)
-- ❌ **Build overhead:** First build ~5–10 min (one-time per region); rebuilds ~3–5 min
-- ❌ **Platform-specific:** May need separate build paths for Windows vs. macOS/Linux (or Docker-based build)
-- ❌ **Disk storage:** Snapshots consume storage; need cleanup strategy (e.g., old snapshots → delete after 30 days)
-- ⚠️ **Tool dependencies:** Requires `qemu-img` (Linux) or `qemu` / PowerShell Hyper-V (Windows)
+- ❌ **Implementation complexity:** Medium (content package upload, ACA build polling, CI hookup)
+- ❌ **Build overhead:** First build may take several minutes in ACA
+- ❌ **Disk storage:** ACA disk images consume storage; need cleanup strategy (e.g., old images → delete after 30 days)
+- ⚠️ **Tool dependencies:** Requires Azure CLI login + ACA build API access
 
 **Feasibility: MEDIUM** (10–20 hours: build script ~6–8h, Bicep integration ~4–6h, testing ~2–4h, CI/CD hookup ~2–4h)
 
 **Timeline:**
-- **Phase 1 (MVP):** Script-only, manual invocation (`devclaw sandbox build`)
-- **Phase 2:** Integration into `devclaw up` (automatic build on first deploy)
+- **Phase 1 (MVP):** `devclaw sandbox build` calls ACA build API
+- **Phase 2:** Integration into `devclaw up` (register disk image before sandbox create)
 - **Phase 3:** CI/CD automation + caching
 
 **Recommendation: PRIMARY STRATEGY.**
@@ -450,4 +448,3 @@ Once Option B is operational:
 | **Multi-squad ready** | ❌ | ✅ (Phase 3) | ✅ (but slow) |
 
 **Sandbox runtime strategy: Option B RECOMMENDED**
-

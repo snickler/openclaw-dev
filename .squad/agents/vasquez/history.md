@@ -20,3 +20,4 @@
 - 2026-06-11: Confirmed regression safeguard adoption and issued final hardening-batch QA verdict: PROCEED_WITH_CHANGES (release-ready with non-blocking follow-ups).
 
 - 2026-06-11: Final QA gate PROCEED_WITH_CHANGES (D-021) recorded; hardening batch release-ready with targeted non-blocking follow-ups (docs, CI wiring, optional policies). Regression safeguards validated and integrated.
+- 2026-06-11: Assigned end-to-end QA for CI→ACA runtime remediation batch; validate disk visibility, sandbox creation flow, and endpoint behavior after security-cleared remediation.

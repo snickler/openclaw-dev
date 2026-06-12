@@ -11,6 +11,7 @@
 //
 // What this does:
 //   - Listens on 18789 (the ACA ingress targetPort).
+//   - Serves /healthz locally for endpoint readiness probes.
 //   - Routes POST /api/messages to 127.0.0.1:3978 (msteams plugin).
 //   - Routes everything else (including WebSocket upgrades for the Control
 //     UI) to 127.0.0.1:18788 (openclaw gateway).
@@ -67,6 +68,10 @@ function isBotFrameworkPath(url) {
     return requestPath(url) === "/api/messages";
 }
 
+function isHealthPath(url) {
+    return requestPath(url) === "/healthz";
+}
+
 function rejectUpgrade(socket) {
     try {
         if (socket.writable) {
@@ -80,6 +85,11 @@ function rejectUpgrade(socket) {
 }
 
 const server = http.createServer((req, res) => {
+    if (isHealthPath(req.url)) {
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+    }
     if (isBotFrameworkPath(req.url)) {
         if (req.method !== "POST") {
             res.writeHead(405, { "Allow": "POST", "Content-Type": "text/plain" });

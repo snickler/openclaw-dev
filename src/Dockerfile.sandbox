@@ -1,0 +1,35 @@
+FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf
+
+ARG OPENCLAW_VERSION=2026.5.26
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
+    git config --global url."https://github.com/".insteadOf "git@github.com:" && \
+    npm install -g openclaw@${OPENCLAW_VERSION} && \
+    npm cache clean --force && \
+    rm -rf /root/.npm
+
+RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
+
+WORKDIR /opt/openclaw-auth
+COPY package.json package-lock.json /opt/openclaw-auth/
+RUN npm ci --omit=dev && npm cache clean --force && rm -rf /root/.npm
+
+COPY openclaw.json /root/.openclaw/openclaw.json
+COPY openclaw.json /opt/openclaw.json.canonical
+COPY auth-proxy.mjs /opt/openclaw-auth/auth-proxy.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/auth-proxy.mjs
+
+COPY gateway-proxy.mjs /opt/openclaw-auth/gateway-proxy.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/gateway-proxy.mjs
+
+COPY entrypoint.sh /opt/entrypoint.sh
+RUN sed -i 's/\r$//' /opt/entrypoint.sh && chmod +x /opt/entrypoint.sh
+
+RUN printf '#!/bin/sh\nopenclaw agent -m "$1" 2>&1 | LC_ALL=C tr -cd "\\11\\12\\15\\40-\\176"\n' > /opt/test-agent.sh && chmod +x /opt/test-agent.sh
+
+EXPOSE 18789
+
+ENTRYPOINT ["/opt/entrypoint.sh"]

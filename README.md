@@ -55,35 +55,39 @@ cd openclaw-dev
 
 ### Disk image provisioning (required for Sandbox)
 
-⚠️ **Current state:** ACA Sandbox boots from pre-built disk images (not OCI container images). This template's Bicep is configured for Sandbox mode by default, but you need to provide a custom Node.js + OpenClaw runtime disk image.
+⚠️ **Current state:** Sandbox disk registration is **CI-first** and image-driven. `devclaw sandbox build` (or the Phase 3 workflow) builds `src/Dockerfile.sandbox` in ACR, then registers that image as an ACA Sandbox disk using short-lived ACR tokens (no local Docker/qemu fallback).
 
-**Option A (Recommended for now): Document required steps**
-Users should provision their own Node.js disk image (24 GB with Node.js, npm, and auth-proxy installed), snap it, then register with ACA Sandbox. The Bicep template will reference that disk.
+ACR auth for private-image disk registration is deterministic: `scripts/register-sandbox-disk.py` automatically runs `az acr login --expose-token` and passes the ephemeral token to `aca sandboxgroup disk create`.
 
-**Option B (Phase 1 in repo): Build local Sandbox disk artifact + metadata**
-This repo now includes:
-- `scripts/build-disk-image.sh` (Linux/macOS) and `scripts/build-disk-image.ps1` (Windows)
-- `devclaw sandbox init`, `build`, `upload`, `status`, and `delete`
-- Metadata output at `_local/sandbox/disk-image-metadata.json` with SHA256 hash + audit trail fields
-
-Phase 2 predeploy integration auto-builds by default:
+**Recommended path (CI-first):**
 
 ```bash
-devclaw up
+devclaw sandbox build
 ```
 
-When `ACA_SANDBOX_MODE=sandbox` and metadata is missing, the predeploy hook auto-runs the build script and verifies the artifact hash before deploy. Set `SANDBOX_AUTO_BUILD=false` only if you need to suppress that behavior temporarily.
+That remotely builds the sandbox runtime image in ACR, registers the disk in the sandbox group, and creates the sandbox from it.
 
-**Option C (Future): Use bootstrap on `aca sandbox exec` post-boot**
-After a plain Linux boot, use `aca sandbox exec` to install Node.js and start the auth-proxy dynamically.
-
-**Sandbox registration step:** Once you have a disk image/snapshot, register it with ACA Sandbox:
+**Bring your own CI-built image (optional):**
 
 ```bash
-devclaw sandbox upload my-squad
+azd env set SANDBOX_SOURCE_IMAGE <acr-login-server>/openclaw-azure/openclaw-sandbox-core:<tag>
+devclaw sandbox build
 ```
 
-This wraps the documented `aca sandboxgroup` / `aca sandbox create` flow and prints the equivalent manual commands if `aca` is not installed yet.
+`devclaw sandbox build` will use `SANDBOX_SOURCE_IMAGE` directly and skip the image build step.
+
+### Sandbox runtime startup contract (to avoid 502)
+
+`src/Dockerfile.sandbox` must include:
+- `/opt/entrypoint.sh` as the entrypoint
+- `gateway-proxy.mjs` listening on `:18789`
+- OpenClaw gateway on internal `:18788` (started by entrypoint)
+
+Post-create verification command:
+
+```bash
+aca sandbox exec --group <sg-name> -l app=openclaw,env=<env> -c "node -e \"const http=require('http');http.get('http://127.0.0.1:18789',res=>{const c=res.statusCode||0;console.log('gateway-status='+c);process.exit(c>=200&&c<500?0:1)}).on('error',e=>{console.error(e.message);process.exit(2)});\""
+```
 
 **Fallback to standard ACA:** If you don't have a custom disk image yet, you can revert to standard Container Apps (storage-persistent, no disk provisioning needed):
 
