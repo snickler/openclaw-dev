@@ -204,8 +204,29 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Publish region bundle to Azure Blob
+      - name: Check Azure Blob publish target
         if: env.HAS_AZURE_BLOB_PUBLISH == 'true'
+        id: storage_target
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            set +e
+            account_exists=$(az storage account show \
+              --name "${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
+              --query name -o tsv 2>/dev/null)
+            rc=$?
+            set -e
+
+            if [ $rc -ne 0 ] || [ -z "$account_exists" ]; then
+              echo "can_publish=false" >> "$GITHUB_OUTPUT"
+              echo "Storage account '${{ secrets.AZURE_STORAGE_ACCOUNT }}' is not available; skipping blob publish."
+              exit 0
+            fi
+
+            echo "can_publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish region bundle to Azure Blob
+        if: env.HAS_AZURE_BLOB_PUBLISH == 'true' && steps.storage_target.outputs.can_publish == 'true'
         uses: azure/cli@v2
         with:
           inlineScript: |
@@ -232,3 +253,7 @@ jobs:
               echo "No blobs found after publish for region: ${{ matrix.region }}" >&2
               exit 1
             fi
+
+      - name: Skip blob verification when no storage target exists
+        if: env.HAS_AZURE_BLOB_PUBLISH == 'true' && steps.storage_target.outputs.can_publish != 'true'
+        run: echo "Azure Blob publish skipped because the storage account target does not exist."
