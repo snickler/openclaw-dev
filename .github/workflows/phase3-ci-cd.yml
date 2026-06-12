@@ -152,6 +152,12 @@ jobs:
             ./_local/sandbox/disk-image-metadata.pem
             ./_local/sandbox/phase3-distribution.json
 
+      - name: Upload CI-built sandbox disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-disk-image
+          path: ./_local/sandbox/*.qcow2
+
   distribute:
     needs:
       - build-and-sign
