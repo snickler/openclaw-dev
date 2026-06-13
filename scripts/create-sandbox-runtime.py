@@ -365,6 +365,7 @@ def bootstrap_runtime(group: str, selector: str) -> None:
         )
         if "GlobalSandboxNotRunning" not in last_detail and "not in Running state" not in last_detail:
             break
+        run(["aca", "sandbox", "resume", "--group", group, "-l", selector], check=False)
         print(f"[sandbox runtime] Sandbox is still resuming; retrying bootstrap ({attempt}/6)...")
         time.sleep(5)
     raise RuntimeError(last_detail or "failed to bootstrap sandbox runtime")
