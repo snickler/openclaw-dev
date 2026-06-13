@@ -16,6 +16,10 @@ _local/
 # Source of truth is teams/manifest.json + teams/package/{color,outline}.png
 teams/package/manifest.json
 teams/openclaw-teams-app.zip
+
+# Generated hosted Squad runtime projection (rebuilt during deploy/build).
+src/squad-runtime/
+
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/

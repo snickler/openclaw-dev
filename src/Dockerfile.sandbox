@@ -1,31 +1,112 @@
+FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf AS squad-runtime-bundle
+
+ARG SQUAD_RUNTIME_GIT_COMMIT=unknown
+ARG SQUAD_RUNTIME_GIT_SHORT_COMMIT=unknown
+ARG SQUAD_RUNTIME_GIT_DIRTY=false
+
+WORKDIR /workspace
+
+COPY scripts/generate-squad-runtime-bundle.mjs /workspace/scripts/generate-squad-runtime-bundle.mjs
+COPY scripts/github-mcp-bridge.mjs /workspace/scripts/github-mcp-bridge.mjs
+COPY .github/agents/squad.agent.md /workspace/.github/agents/squad.agent.md
+COPY .squad/team.md /workspace/.squad/team.md
+COPY .squad/routing.md /workspace/.squad/routing.md
+COPY .squad/decisions.md /workspace/.squad/decisions.md
+COPY .squad/rai/policy.md /workspace/.squad/rai/policy.md
+COPY .squad/agents/ripley/charter.md /workspace/.squad/agents/ripley/charter.md
+COPY .squad/agents/bishop/charter.md /workspace/.squad/agents/bishop/charter.md
+COPY .squad/agents/parker/charter.md /workspace/.squad/agents/parker/charter.md
+COPY .squad/agents/hicks/charter.md /workspace/.squad/agents/hicks/charter.md
+COPY .squad/agents/vasquez/charter.md /workspace/.squad/agents/vasquez/charter.md
+COPY .squad/agents/scribe/charter.md /workspace/.squad/agents/scribe/charter.md
+COPY .squad/agents/ralph/charter.md /workspace/.squad/agents/ralph/charter.md
+COPY .squad/agents/Rai/charter.md /workspace/.squad/agents/Rai/charter.md
+COPY .squad/config.json /workspace/.squad/config.json
+COPY .squad/ceremonies.md /workspace/.squad/ceremonies.md
+COPY .squad/identity/now.md /workspace/.squad/identity/now.md
+COPY .squad/identity/wisdom.md /workspace/.squad/identity/wisdom.md
+COPY .github /workspace/.github
+COPY .copilot /workspace/.copilot
+COPY .mcp.json /workspace/.mcp.json
+COPY skills /workspace/skills
+COPY .squad/templates /workspace/.squad/templates
+COPY src/openclaw.json /workspace/src/openclaw.json
+
+RUN node /workspace/scripts/generate-squad-runtime-bundle.mjs \
+    --repo-root /workspace \
+    --output /workspace/generated/runtime-bundle.json \
+    --git-commit "${SQUAD_RUNTIME_GIT_COMMIT}" \
+    --git-short-commit "${SQUAD_RUNTIME_GIT_SHORT_COMMIT}" \
+    --git-dirty "${SQUAD_RUNTIME_GIT_DIRTY}" && \
+    node -e "const fs=require('fs');const b=JSON.parse(fs.readFileSync('/workspace/generated/runtime-bundle.json','utf8'));if(!b?.provenance?.gitCommitSha||!b?.provenance?.sourceDigestSha256||!Array.isArray(b?.provenance?.sourceFiles)||!b.provenance.sourceFiles.length){throw new Error('runtime bundle missing authoritative provenance');}"
+
 FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf
 
 ARG OPENCLAW_VERSION=2026.5.26
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+    apt-get install -y --no-install-recommends git ca-certificates gh jq && \
     rm -rf /var/lib/apt/lists/* && \
+    GH_BIN="$(command -v gh)" && ln -sf "$GH_BIN" /usr/local/bin/gh && \
+    GIT_BIN="$(command -v git)" && ln -sf "$GIT_BIN" /usr/local/bin/git && \
+    JQ_BIN="$(command -v jq)" && ln -sf "$JQ_BIN" /usr/local/bin/jq && \
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     npm install -g openclaw@${OPENCLAW_VERSION} && \
     npm cache clean --force && \
     rm -rf /root/.npm
 
-RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
+RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth /opt/openclaw-squad
 
 WORKDIR /opt/openclaw-auth
-COPY package.json package-lock.json /opt/openclaw-auth/
+COPY src/package.json src/package-lock.json /opt/openclaw-auth/
 RUN npm ci --omit=dev && npm cache clean --force && rm -rf /root/.npm
 
-COPY openclaw.json /root/.openclaw/openclaw.json
-COPY openclaw.json /opt/openclaw.json.canonical
-COPY auth-proxy.mjs /opt/openclaw-auth/auth-proxy.mjs
+COPY src/patch-openclaw-github-skill.mjs /opt/openclaw-auth/patch-openclaw-github-skill.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-github-skill.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-github-skill.mjs
+
+COPY src/patch-openclaw-skills-refresh.mjs /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs
+
+COPY src/patch-openclaw-binary-detection.mjs /opt/openclaw-auth/patch-openclaw-binary-detection.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-binary-detection.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-binary-detection.mjs
+
+COPY src/openclaw.json /root/.openclaw/openclaw.json
+COPY src/openclaw.json /opt/openclaw.json.canonical
+COPY src/auth-proxy.mjs /opt/openclaw-auth/auth-proxy.mjs
 RUN sed -i 's/\r$//' /opt/openclaw-auth/auth-proxy.mjs
 
-COPY gateway-proxy.mjs /opt/openclaw-auth/gateway-proxy.mjs
+COPY src/gateway-proxy.mjs /opt/openclaw-auth/gateway-proxy.mjs
 RUN sed -i 's/\r$//' /opt/openclaw-auth/gateway-proxy.mjs
 
-COPY entrypoint.sh /opt/entrypoint.sh
+COPY --from=squad-runtime-bundle /workspace/generated /opt/openclaw-squad
+COPY src/seed-squad-runtime.mjs /opt/openclaw-auth/seed-squad-runtime.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/seed-squad-runtime.mjs && \
+    node -e "const fs=require('fs');const bundle='/opt/openclaw-squad/runtime-bundle.json';const bridge='/opt/openclaw-squad/github-mcp-bridge.mjs';if(!fs.existsSync(bridge)){throw new Error('staged GitHub MCP bridge asset missing after copy');}const b=JSON.parse(fs.readFileSync(bundle,'utf8'));if(!b?.provenance?.gitCommitSha||!b?.provenance?.sourceDigestSha256){throw new Error('runtime bundle provenance missing after copy');}"
+
+COPY src/runtime-command-wrapper.sh /opt/openclaw-auth/runtime-command-wrapper.sh
+RUN sed -i 's/\r$//' /opt/openclaw-auth/runtime-command-wrapper.sh && chmod +x /opt/openclaw-auth/runtime-command-wrapper.sh && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/task && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/runSubagent && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/read_agent && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/ask_user && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_decide && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_read && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_write && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_append && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_delete && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_list && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_health && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/code && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/codium && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/copilot && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/github-copilot
+
+COPY src/entrypoint.sh /opt/entrypoint.sh
 RUN sed -i 's/\r$//' /opt/entrypoint.sh && chmod +x /opt/entrypoint.sh
 
 RUN printf '#!/bin/sh\nopenclaw agent -m "$1" 2>&1 | LC_ALL=C tr -cd "\\11\\12\\15\\40-\\176"\n' > /opt/test-agent.sh && chmod +x /opt/test-agent.sh

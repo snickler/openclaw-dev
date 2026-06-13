@@ -4,3 +4,5 @@
 .squad/log/** merge=union
 .squad/orchestration-log/** merge=union
 .squad/rai/audit-trail.md merge=union
+*.sh text eol=lf
+devclaw text eol=lf

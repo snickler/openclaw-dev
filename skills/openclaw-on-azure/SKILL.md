@@ -3,7 +3,7 @@ name: openclaw-on-azure
 description: >-
   Deploy, operate, and troubleshoot a secure, hosted OpenClaw AI assistant on
   Azure (default ACA Sandbox with custom disk provisioning, fallback to standard Azure Container Apps, plus Azure OpenAI in Foundry Models, passwordless via
-  Managed Identity, Entra ID Easy Auth, optional Microsoft Teams channel) using
+  Managed Identity, an app-owned Entra OIDC proxy in Sandbox mode, optional Microsoft Teams channel) using
   the repo's `devclaw` wrapper around the Azure Developer CLI (azd). USE FOR:
   deploy OpenClaw to Azure, "devclaw up" / "azd up" failing, set the model or
   region, connect OpenClaw to Microsoft Teams / use it from a phone, stop to
@@ -19,8 +19,7 @@ license: MIT
 This skill lets an AI assistant set up, run, and fix the **openclaw-dev** template
 in plain English. It deploys [OpenClaw](https://github.com/openclaw/openclaw) as a
 secure, always-on AI assistant on **ACA Sandbox (default, requires custom disk provisioning) or standard Azure Container Apps (legacy fallback)**, wired to **Azure OpenAI
-in Foundry Models** over a **Managed Identity** (no API keys), gated by **Entra ID
-Easy Auth**, and optionally reachable from **Microsoft Teams** on the user's phone.
+in Foundry Models** over a **Managed Identity** (no API keys), gated in Sandbox mode by an **app-owned Entra OIDC reverse proxy** inside the runtime, and optionally reachable from **Microsoft Teams** on the user's phone.
 
 Use this repo's own scripts, env-var contract, region list, and error catalog
 **instead of guessing**. Always confirm with the user before any destructive
@@ -72,7 +71,7 @@ not `devclaw test`.
 
 ### Disk image provisioning (required for ACA Sandbox — the default)
 
-**⚠️ Current state:** ACA Sandbox disk images are registered from a **CI-built ACR image** (`src/Dockerfile.sandbox`) using `devclaw sandbox build` (or the Phase 3 workflow). The flow is remote-build-first (ACR build + disk registration) with no local image-build fallback.
+**⚠️ Current state:** ACA Sandbox disk images are registered from a **CI-built ACR image** (`src/Dockerfile.sandbox`) using `devclaw sandbox build` (or the Phase 3 workflow). The flow is remote-build-first (ACR build + disk registration) with no local image-build fallback, and the hosted Squad bundle is generated into `src/squad-runtime/runtime-bundle.json` before the ACR build so the durable image can stay on the `src/` build context. After `aca sandbox create`, the wrapper still performs an explicit `aca sandbox exec /opt/entrypoint.sh` bootstrap because the preview Sandbox platform does not reliably auto-run the image entrypoint on create/resume.
 Private-image registry auth is deterministic: `register-sandbox-disk.py` acquires short-lived ACR credentials via `az acr login --expose-token` and injects them into `aca sandboxgroup disk create`.
 
 **Decision: Option B (Automated disk image builder) — APPROVED**
@@ -96,19 +95,19 @@ azd env set ACA_SANDBOX_MODE standard
 ./devclaw up
 ```
 
-This deploys to standard Container Apps (stateful, Easy Auth + Teams support) instead of Sandbox while Phase 1 disk image automation is being built.
+This deploys to standard Container Apps (stateful, legacy Easy Auth + Teams support) instead of Sandbox while Phase 1 disk image automation is being built.
 
 ---
 
 ## Host modes: Express vs. standard vs. ACA Sandbox
 
-| Mode | Default? | Cold start | Cost | Easy Auth + Teams | Setup |
+| Mode | Default? | Cold start | Cost | Browser auth + Teams | Setup |
 |------|----------|-----------|------|------------------|-------|
-| **ACA Sandbox** | ✅ YES | ~5–10s | $0 when idle | ❌ Not yet (future) | Custom Node.js disk image + `aca sandbox create` |
-| **Container Apps (standard)** | ❌ No (legacy) | ~30–60s | $0 when idle | ✅ Full support | `azd env set ACA_SANDBOX_MODE standard` before `devclaw up` |
-| **Container Apps (Express)** | ❌ No (legacy) | ~10–20s | $0 when idle | ✅ Full support | `azd env set ACA_SANDBOX_MODE standard USE_EXPRESS_ENV true` before `devclaw up` |
+| **ACA Sandbox** | ✅ YES | ~5–10s | $0 when idle | ✅ In-app Entra OIDC browser auth; Teams webhook path stays exact and proxy-routed | Custom Node.js disk image + `aca sandbox create --entrypoint /opt/entrypoint.sh` |
+| **Container Apps (standard)** | ❌ No (legacy) | ~30–60s | $0 when idle | ✅ Legacy Easy Auth + Teams | `azd env set ACA_SANDBOX_MODE standard` before `devclaw up` |
+| **Container Apps (Express)** | ❌ No (legacy) | ~10–20s | $0 when idle | ✅ Legacy Easy Auth + Teams | `azd env set ACA_SANDBOX_MODE standard USE_EXPRESS_ENV true` before `devclaw up` |
 
-**Decision:** The template **defaults to ACA Sandbox** (fastest cold-start, most isolated). However, Sandbox requires a pre-built custom disk image (Node.js + auth-proxy), which is not automatically generated today. For immediate deployment without custom disk provisioning, set `ACA_SANDBOX_MODE=standard` to use legacy Container Apps (stateful via Azure Files, full Easy Auth + Teams support). See "Disk image provisioning" section below for Sandbox setup.
+**Decision:** The template **defaults to ACA Sandbox** (fastest cold-start, most isolated). Sandbox browser access is owned by the in-app Entra OIDC proxy inside `gateway-proxy.mjs`; the ACA sandbox public port is anonymous at the platform layer. However, Sandbox still requires a pre-built custom disk image (Node.js + auth-proxy + OIDC-aware gateway-proxy), which is not automatically generated today. For immediate deployment without custom disk provisioning, set `ACA_SANDBOX_MODE=standard` to use legacy Container Apps (stateful via Azure Files, legacy Easy Auth + Teams support). See "Disk image provisioning" section below for Sandbox setup.
 
 ---
 
@@ -117,7 +116,7 @@ This deploys to standard Container Apps (stateful, Easy Auth + Teams support) in
 - **Azure CLI** (`az`) and **Azure Developer CLI** (`azd`) installed and logged in
   (`az login`, `azd auth login`). `devclaw` checks for both and exits if missing.
 - An Azure subscription and a tenant where the user can create **one Entra ID app
-  registration** for the Easy Auth login gate. The optional Teams add-on creates a
+  registration** for the sandbox browser-login proxy. The optional Teams add-on creates a
   second app registration (the Bot) plus a client secret — some tenants restrict
   this (see error catalog).
 - Either local **Docker Desktop** running **or** the default `remoteBuild: true` in
@@ -141,22 +140,36 @@ This deploys to standard Container Apps (stateful, Easy Auth + Teams support) in
 | `ACA_SANDBOX_MODE` | no | `sandbox` | Host mode selector: `sandbox` (default) for ACA Sandbox (requires custom Node.js disk image provisioning); `standard` (legacy) for Azure Container Apps with optional Express mode cold-start (`azd env set USE_EXPRESS_ENV true`). For Sandbox mode, see "Disk image provisioning" below; disk must be pre-built and registered with ACA Sandbox. |
 | `SANDBOX_DISK_NAME` | no | unset | ACA Sandbox disk image resource name under `sandboxGroups/<group>/diskimages`. `devclaw sandbox build` sets it after registration. |
 | `SANDBOX_DISK_IMAGE_ID` | no | unset | ACA Sandbox disk image resource ID returned by `devclaw sandbox build`/CI registration. Useful for auditing and troubleshooting. |
-| `SANDBOX_SOURCE_IMAGE` | no | unset | Optional pre-built image ref for sandbox disk registration. If unset, `devclaw sandbox build` performs a remote `az acr build` of `src/Dockerfile.sandbox`. |
+| `SANDBOX_SOURCE_IMAGE` | no | unset | Optional pre-built image ref for sandbox disk registration. If unset, `devclaw sandbox build` generates `src/squad-runtime/runtime-bundle.json` and performs a remote `az acr build` of `src/Dockerfile.sandbox` with `src/` as the build context. |
 
 ### CI hardening (sandbox target protection)
 
 Phase 3 workflow no longer exposes `workflow_dispatch` inputs for sandbox target RG/group/region. It uses locked repo/org vars (`CI_SANDBOX_RESOURCE_GROUP`, `CI_SANDBOX_GROUP`, `CI_SANDBOX_REGION`) plus allowlist/regex validation before build/register steps.
 | `SANDBOX_DISK_SNAPSHOT_ID` | no | unset | Legacy phase 1/2 input for sandbox disk snapshot resource ID (kept for compatibility while ACA Sandbox APIs were still maturing). |
-| `SANDBOX_GITHUB_COPILOT_PAT` | no | unset | Optional fine-grained GitHub PAT (`github_pat_...`). When set, `devclaw sandbox upload` auto-creates a sandbox-group credential (`github-copilot`) and attaches it to the created sandbox. |
-| `SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID` | auto | unset | Cached credential ID created during `devclaw sandbox upload` when `SANDBOX_GITHUB_COPILOT_PAT` is provided. Reused on subsequent uploads to avoid duplicate credential creation. |
+| `SANDBOX_GITHUB_COPILOT_PAT` | no | unset | Optional fine-grained GitHub PAT (`github_pat_...`). When set, `devclaw sandbox upload` auto-creates a sandbox-group credential (`github-copilot`) and attaches it to the created sandbox. In custom Sandbox images today, this PAT is also the bridge for non-interactive `gh`: `devclaw sandbox build/upload` passes it into the sandbox as `GH_TOKEN` because the attached `github-copilot` credential itself is not surfaced inside custom images as a discovered env var/file/mount. |
+| `SANDBOX_GITHUB_COPILOT_CREDENTIAL_ID` | auto | unset | Cached credential ID created during `devclaw sandbox upload` when `SANDBOX_GITHUB_COPILOT_PAT` is provided. Reused on subsequent uploads to avoid duplicate credential creation. If only this cached credential ID remains and the PAT is no longer available locally, the credential still attaches, but `gh` inside a custom Sandbox image will not auto-auth. Re-set the PAT before `devclaw sandbox build/upload` when you want in-sandbox `gh` auth. |
+| `GITHUB_TOKEN` | no | unset | Optional GitHub token bridge for the **standard ACA runtime**. If set before `devclaw up` / `devclaw deploy`, Bicep injects it as a secret-backed `GITHUB_TOKEN` + `GH_TOKEN` inside the container so hosted `gh` and token-backed GitHub MCP servers can authenticate. Sandbox mode ignores this env var; use `SANDBOX_GITHUB_COPILOT_PAT` there. |
 | `USE_EXPRESS_ENV` | no | `false` | When set to `true`, Container Apps environment is created in Express mode (preview) for faster cold-start (~10–20s vs. ~30–60s). Only applicable when `ACA_SANDBOX_MODE=standard`. Supported regions include East Asia and West Central US. Express mode disables storage mounts, so session state does not persist across replica restarts. |
 | `SKIP_STORAGE` | no | `false` | Set to `true` if Azure Policy blocks `allowSharedKeyAccess: true` on storage accounts (ACA file mounts require shared keys today). Skips the storage account, file share, and volume mount. Trade-off: gateway token + sessions don't persist across replica restarts. |
-| `SERVICE_MANAGEMENT_REFERENCE` | no | unset | Set to a service-management-reference GUID if your tenant requires `serviceManagementReference` on every new app registration (common on large corporate tenants). The preprovision hook passes it to `az ad app create` for both the Easy Auth and the Bot app registrations. |
+| `SERVICE_MANAGEMENT_REFERENCE` | no | unset | Set to a service-management-reference GUID if your tenant requires `serviceManagementReference` on every new app registration (common on large corporate tenants). The preprovision hook passes it to `az ad app create` for the sandbox browser-auth app registration and the Bot app registration. |
 | `ENABLE_TEAMS` | no | unset (Teams disabled) | Set to `true` *before* `devclaw up` (or before `devclaw teams`) to opt into the Microsoft Teams add-on. When unset, the preprovision hook skips bot app creation, Bicep skips the Azure Bot + Teams channel + MSTEAMS_* env vars, and the runtime disables the msteams plugin. |
 | `BOT_APP_ID` / `BOT_APP_SECRET` / `BOT_TENANT_ID` | auto (when `ENABLE_TEAMS=true`) | — | Created by the preprovision hook when the Teams add-on is enabled; do not set by hand unless your tenant blocks `az ad app credential reset` and you're providing a pre-created bot app reg |
-| `EASYAUTH_APP_ID` | auto | — | Created by the preprovision hook |
+| `BROWSER_AUTH_MODE` | auto | `entra-oidc-proxy` in Sandbox mode | Created by the preprovision/runtime bootstrap flow. Sandbox only. |
+| `BROWSER_AUTH_CLIENT_ID` / `BROWSER_AUTH_TENANT_ID` | auto (Sandbox mode) | — | Created by the preprovision hook for the in-container Entra OIDC browser-auth proxy. |
+| `BROWSER_AUTH_SESSION_SECRET` | auto (Sandbox mode) | — | Random secret used to sign/track secure HttpOnly browser sessions in the in-container OIDC proxy. |
+| `BROWSER_AUTH_ALLOWED_USERS` | auto (Sandbox mode) | current deployer account | Comma-separated browser allowlist enforced inside the OIDC proxy before a session cookie is issued. Defaulted by the preprovision hook to `az account show --query user.name`. Expand explicitly if more users should be allowed. |
+| `BROWSER_AUTH_ALLOWED_OBJECT_IDS` | auto when resolvable (Sandbox mode) | signed-in deployer object ID | Optional comma-separated Entra object ID allowlist. Used as an additional strict match inside the OIDC proxy. |
+| `PUBLIC_BASE_URL` | auto (after `devclaw sandbox build`) | — | Canonical public URL for Sandbox mode. Used for redirect URI construction, cookie scoping, and origin validation. Do not set this from client-supplied host headers. |
+| `EASYAUTH_APP_ID` | auto (legacy standard mode) | — | Created by the preprovision hook only for the legacy standard Container Apps path. |
 | `SERVICE_OPENCLAW_IMAGE_NAME` | auto | — | Populated by azd after first deploy |
 | `AOAI_DEFAULT_API_VERSION` | no | unset | Escape hatch in `src/auth-proxy.mjs`. Only set when targeting a **non-v1** AOAI surface (e.g. `2024-10-21`). When set, the proxy appends `?api-version=<value>` to `/openai/...` requests that don't already have one. Leave unset for the shipped v1 (`/openai/v1/...`) path. |
+
+### Hosted `/skills` GitHub card
+
+- The built-in OpenClaw GitHub skill at `/usr/local/lib/node_modules/openclaw/skills/github/SKILL.md` is blocked unless `gh` is on PATH.
+- This repo's hosted images preinstall `gh`, symlink it into `/usr/local/bin/gh`, and patch the bundled skill so Linux-hosted runtimes prefer **apt** guidance instead of a misleading **brew** button.
+- If the card still shows `bin:gh` blocked even though `gh` exists, treat that as stale skills-snapshot / requirement-detection state. This repo patches OpenClaw's skills refresh module so hosted sessions re-evaluate skill requirements on each runtime boot.
+- Hosted boot forces `GH_PROMPT_DISABLED=1`; use `SANDBOX_GITHUB_COPILOT_PAT` (Sandbox) or `GITHUB_TOKEN` (standard ACA) for non-interactive auth instead of `gh auth login`.
 
 **Allowed `AZURE_LOCATION` values:** `australiaeast`, `eastasia`, `eastus`, `eastus2`,
 `japaneast`, `koreacentral`, `southindia`, `swedencentral`, `switzerlandnorth`,
@@ -206,12 +219,13 @@ The workflow publishes with `--auth-mode login` and verifies that blobs exist un
 1. Confirm `az`/`azd` installed and logged in (`devclaw login` if not).
 2. Ensure you have a pre-built Node.js disk image ready (see "Disk image provisioning" section above).
 3. Optional: `azd env set AZURE_SUBSCRIPTION_ID <id>` / `AZURE_LOCATION <region>` / `AZURE_OPENAI_LOCATION <region>`.
-4. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min. Bicep will default to Sandbox mode; you'll need to manually provision the disk and sandbox group via `aca` CLI as shown above.
+4. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min. Bicep defaults to Sandbox mode and the preprovision hook creates the browser-auth app registration.
+5. `devclaw sandbox build` — remotely builds/registers the disk, creates the sandbox with `/opt/entrypoint.sh`, exposes the sandbox port anonymously, updates the Entra redirect URI to `PUBLIC_BASE_URL/oidc/callback`, and verifies `/healthz` plus the browser-login redirects.
 
 **Quick start without a disk image (use standard Container Apps instead):**
 
 1. Confirm `az`/`azd` installed and logged in.
-2. `azd env set ACA_SANDBOX_MODE standard` — this opts out of Sandbox and uses standard Container Apps (stateful, Easy Auth + Teams supported).
+2. `azd env set ACA_SANDBOX_MODE standard` — this opts out of Sandbox and uses standard Container Apps (stateful, legacy Easy Auth + Teams supported).
 3. Optional: `azd env set AZURE_SUBSCRIPTION_ID <id>` / `AZURE_LOCATION <region>` / `AZURE_OPENAI_LOCATION <region>`.
 4. `./devclaw up` (or `.\devclaw.cmd up`). First run ~6 min.
 5. Verify: `devclaw status` (expect `Running`), then open the URL in a browser — Entra ID prompts for Microsoft sign-in, then the WebChat UI loads.
@@ -259,13 +273,14 @@ will prompt to enable it and re-provision in one step.
   org **must** repoint these to their own policy URLs before sideloading.
 
 ### Restrict access to specific users/groups
-Easy Auth is configured automatically by `devclaw up`. To lock it down:
-Azure Portal → Entra ID → App registrations → `openclaw-auth-<env>` → Enterprise
+Sandbox browser auth is configured automatically by `devclaw up` + `devclaw sandbox build`. To lock it down:
+- Fastest repo-native path: set `BROWSER_AUTH_ALLOWED_USERS` (and optionally `BROWSER_AUTH_ALLOWED_OBJECT_IDS`) in the azd env, then re-run `devclaw sandbox build`.
+- Additional tenant-side hardening: Azure Portal → Entra ID → App registrations → `openclaw-browser-<env>` → Enterprise
 applications → set **Assignment required? = Yes** and assign users/groups.
 
 ### Tear everything down (DESTRUCTIVE — confirm first)
 `devclaw down` deletes the resource group, ACA, OpenAI, storage, **and** the
-Entra app registrations that were created (Easy Auth always; Bot only when the
+Entra app registrations that were created (sandbox browser auth in Sandbox mode, Easy Auth only on the legacy standard path, Bot only when the
 Teams add-on is enabled). Always confirm with the user before running it.
 
 ---
@@ -275,7 +290,7 @@ Teams add-on is enabled). Always confirm with the user before running it.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Please run 'az login' to setup account.` inside the `[preprovision]` hook even though `az account show` works in your normal shell | azd points `AZURE_CONFIG_DIR` at the repo-local `.azure/` folder; that folder has no signed-in account. | Already shipped: the preprovision hook detects this and unsets `AZURE_CONFIG_DIR` so `az` falls back to the user's default (`~/.azure` / `%USERPROFILE%\.azure`). If you still see it, run `az login` in the same shell you'll run `devclaw up` from. |
-| `[preprovision] ERROR: Failed to create ... app registration` and `ServiceManagementReference field is required for Create` | Restricted tenant requires `serviceManagementReference` (a service-management-reference GUID) on every new app registration. | `azd env set SERVICE_MANAGEMENT_REFERENCE <guid>` and re-run `devclaw up`. The hook forwards it to both `az ad app create` calls (Easy Auth + Bot). Get the GUID from your tenant admin. |
+| `[preprovision] ERROR: Failed to create ... app registration` and `ServiceManagementReference field is required for Create` | Restricted tenant requires `serviceManagementReference` (a service-management-reference GUID) on every new app registration. | `azd env set SERVICE_MANAGEMENT_REFERENCE <guid>` and re-run `devclaw up`. The hook forwards it to both `az ad app create` calls (sandbox browser auth + Bot). Get the GUID from your tenant admin. |
 | `Resource 'acr...' was disallowed by policy ... Container registries should have local admin account disabled.` | Subscription policy requires `adminUserEnabled: false` on ACR. | Already shipped: ACR is created with admin disabled and the container app pulls images via its system-assigned managed identity (AcrPull role assigned by Bicep). No env var needed. |
 | `Local authentication methods are not allowed` on the storage account, or `allowSharedKeyAccess: true` is disallowed by policy | Subscription policy blocks shared-key access on storage; ACA file mounts require shared keys today. | `azd env set SKIP_STORAGE true` then re-run `devclaw up`. The storage account, file share, and volume mount are skipped; the entrypoint falls back to an in-container ephemeral state dir. Gateway token + sessions won't survive a replica restart. |
 | `Failed to provision revision for container app — Operation expired` (~20 min timeout) on first provision | The placeholder image (`mcr.microsoft.com/k8se/quickstart:latest`) listens on `:80`, but probes/ingress were targeting `:18789`. | Already shipped: on first provision (`containerImage` empty) Bicep targets ingress at `:80` and skips probes; the `postdeploy` hook flips ingress back to `:18789` after the first real `azd deploy` lands. |
@@ -290,12 +305,13 @@ Teams add-on is enabled). Always confirm with the user before running it.
 | `Circular dependency detected on resource ... containerApps` during `azd provision` | Old `aca.bicep` self-reference | Pull latest (uses a `containerImage` parameter) |
 | `401 invalid issuer` | RBAC not propagated | Wait ~5 min; `az role assignment list --assignee <principal-id> --all` |
 | `disableLocalAuth` blocks `list-keys` | By design | Expected — Managed Identity only, no keys |
-| `pairing required` | Missing `dangerouslyDisableDeviceAuth`/`trustedProxies` | Ensure both are in `src/openclaw.json` |
-| `Proxy headers detected from untrusted address` | Reverse proxy not trusted | Add proxy CIDRs to `gateway.trustedProxies` |
-| WebChat shows login screen / token not injected | `entrypoint.sh` didn't finish | Check `devclaw logs` |
+| `pairing required` | Missing `dangerouslyDisableDeviceAuth` / exact browser-origin config in the trusted proxy flow | Ensure `entrypoint.sh` rewrites `gateway.controlUi.allowedOrigins` to `PUBLIC_BASE_URL` and keeps `dangerouslyDisableDeviceAuth: true` for hosted browser use |
+| `Proxy headers detected from untrusted address` | Reverse proxy not trusted | Keep the internal gateway on loopback and `gateway.trustedProxies` limited to `127.0.0.1` / `::1` |
+| WebChat shows `302 /oidc/login` but never reaches Microsoft sign-in | Browser auth app registration redirect URI missing or stale | Re-run `devclaw sandbox build` so the bootstrap step updates `PUBLIC_BASE_URL/oidc/callback` on the app registration |
+| Browser sign-in succeeds but callback returns `403 principal-not-allowed` | The user authenticated in the tenant, but is not in `BROWSER_AUTH_ALLOWED_USERS` or `BROWSER_AUTH_ALLOWED_OBJECT_IDS` | Add the exact user/UPN (or object ID) to the azd env allowlist and re-run `devclaw sandbox build`. Default is the current deployer only. |
 | `POST /api/messages` → **502** | msteams plugin didn't load (nothing on `:3978`) | Confirm the `plugins` block in `src/openclaw.json`, `devclaw deploy`, look for `… msteams …` in `[gateway] http server listening` log |
 | `POST /api/messages` → **401** to a curl test | Bot Framework JWT auth rejecting unsigned request | None — real Teams traffic carries a valid token |
-| Teams DM is acknowledged (200) but bot never replies | `channels.msteams.dmPolicy` defaults to `"pairing"` — unknown senders are silently ignored until approved via CLI | Already shipped: `src/openclaw.json` sets `dmPolicy: "open"` + `allowFrom: ["*"]`. Single-tenant AAD + Easy Auth keeps reach scoped to the deployer's tenant. |
+| Teams DM is acknowledged (200) but bot never replies | `channels.msteams.dmPolicy` defaults to `"pairing"` — unknown senders are silently ignored until approved via CLI | Already shipped: `src/openclaw.json` sets `dmPolicy: "open"` + `allowFrom: ["*"]`. Single-tenant Entra sign-in still scopes the browser experience to the deployer's tenant. |
 | Direct Line / Web Chat / Teams test channel: user message acked (200) but bot reply never arrives. Container logs show `Blocked Microsoft Teams serviceUrl host: directline.botframework.com` | The bundled `@openclaw/msteams` plugin's SSRF guard only allows `smba.trafficmanager.net` + `smba.infra.{gcc,gov,dod}.*` (real Teams channel hosts). Direct Line uses `directline.botframework.com`, so every reply is silently dropped inside the streaming pipeline. | Already shipped: `src/patch-msteams-allowlist.mjs` runs at image build (see `src/Dockerfile`) and extends the plugin's allowlist to include `directline.botframework.com` + `europe.directline.botframework.com`. Idempotent. Remove once upstream plugin exposes a public hook. |
 | Bot reply attempt fails with `AADSTS7000229: The client application <bot-app-id> is missing service principal in the tenant <tenant-id>` | The Bot App Registration was created without an enterprise application (service principal) in the consuming tenant — the Bot Framework token endpoint can't issue tokens to an appId with no SP. Happens when an app reg is provisioned via Graph without `az ad sp create`, or when the bot is consumed cross-tenant. | One-time fix: `az ad sp create --id $(azd env get-value BOT_APP_ID)`. If `az` is rate-limited, call Graph directly: `curl -s -X POST https://graph.microsoft.com/v1.0/servicePrincipals -H "Authorization: Bearer $(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)" -H "Content-Type: application/json" -d "{\"appId\":\"$(azd env get-value BOT_APP_ID)\"}"`. No redeploy needed — propagates in <30s. |
 | Bot replies in WebChat but not Teams | Teams channel off or wrong `botId` in sideload | Re-run `devclaw teams` |
@@ -324,15 +340,19 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   `"api": "openai-completions"` and `src/auth-proxy.mjs` injects the MI bearer.
   No `openai` npm SDK. `disableLocalAuth: true` (no keys). To target a non-v1
   AOAI surface, set `AOAI_DEFAULT_API_VERSION` (see env-var table).
-- **Managed Identity** has the **Cognitive Services User** role on the model account.
-- **Entra ID Easy Auth** forces Microsoft sign-in before the container; `/api/messages`
-  is excluded so Bot Framework can call in with its own JWT.
+- **Managed Identity** needs both the **Cognitive Services User** and
+  **Cognitive Services OpenAI User** roles on the model account.
+- **gateway-proxy.mjs** is the public auth boundary in Sandbox mode. It owns
+  Microsoft sign-in, callback handling, secure HttpOnly session cookies, exact-path
+  exemptions (`/oidc/login`, `/oidc/callback`, `/healthz`, and `/api/messages`
+  when Teams is enabled), and forwards authenticated traffic to the internal
+  OpenClaw gateway using trusted-proxy headers.
 - **Azure Bot Service** fronts the Teams channel; **Azure Files** persists state;
   **Container Registry** stores the image; **Log Analytics** holds logs.
 
 ## Security model (defense in depth — 4 layers)
-1. **Entra ID Easy Auth** (Microsoft login, tenant-scoped) before the container.
-2. **Gateway token** — random per-container token required for the WebSocket API.
+1. **In-app Entra OIDC proxy** (Microsoft login, tenant-scoped, strict redirect/issuer/audience validation) before the OpenClaw gateway.
+2. **Trusted-proxy gateway mode** — browser never receives the OpenClaw gateway token; the gateway only trusts loopback proxy headers.
 3. **Managed Identity** — short-lived Entra tokens, `disableLocalAuth: true`, no keys.
 4. **Ephemeral container** — disposable; `devclaw down && devclaw up` = clean slate.
 
@@ -347,7 +367,7 @@ through the model endpoint); the container runs as **root** (harden for producti
 
 Before running any of these, **state what will be deleted and ask the user to confirm**:
 - `devclaw down` / `azd down --purge` (deletes the whole resource group)
-- `az ad app delete` (removes the Bot / Easy Auth app registrations)
+- `az ad app delete` (removes the Bot / browser-auth / legacy Easy Auth app registrations)
 - removing role assignments, or `rm -rf .azure*` / state files
 
 Never use `--no-prompt`/`--force` to skip a confirmation the user hasn't given.

@@ -42,6 +42,15 @@ check_prereqs() {
     fi
 }
 
+generate_runtime_bundle() {
+    if ! command -v node >/dev/null 2>&1; then
+        echo -e "  ${R}Node.js is required to generate the hosted Squad runtime bundle.${N}"
+        exit 1
+    fi
+    echo -e "  ${C}Generating hosted Squad runtime bundle from authoritative sources...${N}"
+    node "$ROOT/scripts/generate-squad-runtime-bundle.mjs" --repo-root "$ROOT"
+}
+
 get_app() {
     RG=$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || true)
     if [ -z "$RG" ]; then
@@ -247,12 +256,21 @@ sandbox)
         SANDBOX_DISK_NAME="${SANDBOX_DISK_NAME:-$(azd env get-value SANDBOX_DISK_NAME 2>/dev/null || echo "")}"
         SANDBOX_SUBSCRIPTION="${SANDBOX_SUBSCRIPTION:-$(azd env get-value AZURE_SUBSCRIPTION_ID 2>/dev/null || echo "")}"
         SANDBOX_IMAGE="${7:-${SANDBOX_SOURCE_IMAGE:-$(azd env get-value SANDBOX_SOURCE_IMAGE 2>/dev/null || azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2>/dev/null || echo "")}}"
+        if [ -z "${7:-}" ] && [ -n "$SANDBOX_EMAIL" ] && [[ "$SANDBOX_EMAIL" == *"/"* || "$SANDBOX_EMAIL" == *":"* ]]; then
+            SANDBOX_IMAGE="$SANDBOX_EMAIL"
+            SANDBOX_EMAIL=""
+        fi
         if [ -z "$SANDBOX_SUBSCRIPTION" ]; then
             SANDBOX_SUBSCRIPTION="$(az account show --query id -o tsv 2>/dev/null || echo "")"
         fi
+        FULL_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+        SHORT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
         if [ -z "$SANDBOX_DISK_NAME" ]; then
-            SHORT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
             SANDBOX_DISK_NAME="openclaw-${SANDBOX_SQUAD}-${SANDBOX_REGION}-${SHORT_SHA}"
+        fi
+        SANDBOX_RUNTIME_GIT_DIRTY=false
+        if ! git -C "$ROOT" diff --quiet --ignore-submodules HEAD -- 2>/dev/null; then
+            SANDBOX_RUNTIME_GIT_DIRTY=true
         fi
 
         echo ""
@@ -278,8 +296,22 @@ sandbox)
             fi
             SANDBOX_IMAGE="${ACR_LOGIN_SERVER}/openclaw-azure/openclaw-sandbox-core:sandbox-${SHORT_SHA}"
             ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
-            echo -e "  ${C}Building sandbox runtime image in ACR (CI-compatible, no local Docker)...${N}"
-            az acr build -r "$ACR_NAME" -f "$ROOT/src/Dockerfile.sandbox" --platform linux/amd64 -t "$SANDBOX_IMAGE" "$ROOT/src" --no-logs
+            if ! command -v node >/dev/null 2>&1; then
+                echo -e "  ${R}Node.js is required to generate the hosted Squad runtime bundle.${N}"
+                exit 1
+            fi
+            echo -e "  ${C}Generating hosted Squad runtime bundle from authoritative sources...${N}"
+            node "$ROOT/scripts/generate-squad-runtime-bundle.mjs" \
+                --repo-root "$ROOT" \
+                --git-commit "$FULL_SHA" \
+                --git-short-commit "$SHORT_SHA" \
+                --git-dirty "$SANDBOX_RUNTIME_GIT_DIRTY"
+            echo -e "  ${C}Building sandbox runtime image in ACR from the repo-root build context (CI-compatible, no local Docker)...${N}"
+            az acr build -r "$ACR_NAME" -f "$ROOT/src/Dockerfile.sandbox" --platform linux/amd64 -t "$SANDBOX_IMAGE" \
+                --build-arg "SQUAD_RUNTIME_GIT_COMMIT=$FULL_SHA" \
+                --build-arg "SQUAD_RUNTIME_GIT_SHORT_COMMIT=$SHORT_SHA" \
+                --build-arg "SQUAD_RUNTIME_GIT_DIRTY=$SANDBOX_RUNTIME_GIT_DIRTY" \
+                "$ROOT" --no-logs
         fi
 
         python "$ROOT/scripts/register-sandbox-disk.py" \
@@ -323,59 +355,26 @@ sandbox)
             [ -n "$SANDBOX_COPILOT_CRED_ID" ] && SANDBOX_CREDENTIAL_ARGS=(--credential "$SANDBOX_COPILOT_CRED_ID")
         fi
         SANDBOX_DISK_ID="${DISK_ID:-$(azd env get-value SANDBOX_DISK_IMAGE_ID 2>/dev/null || echo "")}"
-        SANDBOX_DISK_ARGS=(--disk "$SANDBOX_DISK_NAME")
-        if [ -n "$SANDBOX_DISK_ID" ]; then
-            SANDBOX_DISK_ARGS=(--disk-id "$SANDBOX_DISK_ID")
-        fi
-        aca sandbox create --group "$SANDBOX_GROUP" "${SANDBOX_DISK_ARGS[@]}" --label app=openclaw --label env="$SANDBOX_SQUAD" "${SANDBOX_CREDENTIAL_ARGS[@]}"
-        SANDBOX_OPENAI_ENDPOINT="${SANDBOX_OPENAI_ENDPOINT:-$(azd env get-value AZURE_OPENAI_ENDPOINT 2>/dev/null || echo "")}"
-        if [ -n "$SANDBOX_OPENAI_ENDPOINT" ]; then
-            SANDBOX_OPENAI_BASE_URL="${SANDBOX_OPENAI_ENDPOINT%/}/openai/v1/"
-            echo -e "  ${C}Bootstrapping OpenClaw inside sandbox...${N}"
-            aca sandbox exec --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" \
-                --command "sh -lc 'nohup env OPENAI_BASE_URL=${SANDBOX_OPENAI_BASE_URL} AZURE_OPENAI_AUTH=managed-identity /opt/entrypoint.sh >/tmp/openclaw-bootstrap.log 2>&1 </dev/null &'"
-        fi
         if [ -n "$SANDBOX_EMAIL" ]; then
-            aca sandbox port add --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" --port 18789 --email "$SANDBOX_EMAIL" >/dev/null 2>&1 || true
+            echo -e "  ${D}Ignoring sandbox email gate (${SANDBOX_EMAIL}) — browser auth is now handled in-app via Entra OIDC and the platform port stays anonymous.${N}"
         fi
-        SANDBOX_PORTS_JSON="$(aca sandbox port list --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" -o json 2>/dev/null || true)"
-        SANDBOX_ENDPOINT=""
-        if [ -n "$SANDBOX_PORTS_JSON" ]; then
-            SANDBOX_ENDPOINT="$(SANDBOX_PORTS_JSON="$SANDBOX_PORTS_JSON" python -c "import json, os
-items = json.loads(os.environ.get('SANDBOX_PORTS_JSON') or '[]')
-if isinstance(items, dict):
-    items = [items]
-for item in items:
-    if not isinstance(item, dict):
-        continue
-    for key in ('url', 'endpoint'):
-        val = item.get(key)
-        if val:
-            print(str(val).rstrip('/'))
-            raise SystemExit(0)
-    host = item.get('fqdn') or item.get('hostName') or item.get('hostname') or item.get('dnsName')
-    if host:
-        print(f'https://{str(host).rstrip('/')}')
-        raise SystemExit(0)")"
+        SANDBOX_ALLOWED_USERS="$(azd env get-value BROWSER_AUTH_ALLOWED_USERS 2>/dev/null || echo "")"
+        [ -n "$SANDBOX_ALLOWED_USERS" ] && echo -e "  ${D}Browser allowlist: ${SANDBOX_ALLOWED_USERS}${N}"
+        if [ -z "$(azd env get-value BROWSER_AUTH_CLIENT_ID 2>/dev/null || echo "")" ]; then
+            echo -e "  ${R}Sandbox browser auth is not provisioned yet.${N}"
+            echo -e "  ${D}Run 'devclaw up' in sandbox mode first so the preprovision hook can create the Entra OIDC app registration.${N}"
+            exit 1
         fi
-        if [ -n "$SANDBOX_ENDPOINT" ] && command -v curl >/dev/null 2>&1; then
-            echo -e "  ${D}Waiting for sandbox endpoint readiness: ${SANDBOX_ENDPOINT}/healthz${N}"
-            READY=0
-            for attempt in $(seq 1 24); do
-                CODE="$(curl -ksS -o /dev/null -w '%{http_code}' "${SANDBOX_ENDPOINT}/healthz" || true)"
-                if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ] || [ "$CODE" = "404" ]; then
-                    READY=1
-                    break
-                fi
-                sleep 5
-            done
-            if [ "$READY" -ne 1 ]; then
-                echo -e "  ${R}Sandbox endpoint probe never became routable (last code: ${CODE:-none}).${N}"
-                echo -e "  ${D}Last known endpoint: ${SANDBOX_ENDPOINT}${N}"
-                exit 1
-            fi
-            echo -e "  ${G}Sandbox endpoint is routable.${N}"
+        SANDBOX_RUNTIME_ARGS=(python "$ROOT/scripts/create-sandbox-runtime.py" --group "$SANDBOX_GROUP" --region "$SANDBOX_REGION" --selector-label "app=openclaw" --selector-label "env=$SANDBOX_SQUAD" --public-port 18789)
+        if [ -n "$SANDBOX_DISK_ID" ]; then
+            SANDBOX_RUNTIME_ARGS+=(--disk-id "$SANDBOX_DISK_ID")
+        else
+            SANDBOX_RUNTIME_ARGS+=(--disk-name "$SANDBOX_DISK_NAME")
         fi
+        if [ -n "$SANDBOX_COPILOT_CRED_ID" ]; then
+            SANDBOX_RUNTIME_ARGS+=(--credential "$SANDBOX_COPILOT_CRED_ID")
+        fi
+        "${SANDBOX_RUNTIME_ARGS[@]}"
         aca sandbox get --group "$SANDBOX_GROUP" -l app=openclaw,env="$SANDBOX_SQUAD" >/dev/null 2>&1 || true
         echo ""
         ;;
@@ -427,8 +426,8 @@ for item in items:
         echo ""
         echo "  Subcommands:"
         echo "    devclaw sandbox init [squad] [region] [openai-region]"
-        echo "    devclaw sandbox build [squad] [region] [rg] [email] [image]"
-        echo "    devclaw sandbox upload [squad] [region] [rg] [email] [image]"
+        echo "    devclaw sandbox build [squad] [region] [rg] [image]"
+        echo "    devclaw sandbox upload [squad] [region] [rg] [image]"
         echo "    devclaw sandbox delete [squad] [region] [rg]"
         echo "    devclaw sandbox status [squad] [rg]"
         echo ""
@@ -466,6 +465,7 @@ up)
         DEPLOY_CMD="azd provision"
         azd provision || DEPLOY_FAILED=1
     else
+        generate_runtime_bundle
         DEPLOY_CMD="azd up"
         azd up || DEPLOY_FAILED=1
     fi
@@ -634,9 +634,11 @@ down)
     # Clean up Entra app registrations before destroying Azure resources
     BOT_ID=$(azd env get-value BOT_APP_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
     AUTH_ID=$(azd env get-value EASYAUTH_APP_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
+    BROWSER_AUTH_ID=$(azd env get-value BROWSER_AUTH_CLIENT_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
     [ -n "$BOT_ID" ] && echo -e "  ${D}Deleting bot app registration: $BOT_ID${N}" && az ad app delete --id "$BOT_ID" 2>/dev/null
     [ -n "$AUTH_ID" ] && echo -e "  ${D}Deleting Easy Auth app registration: $AUTH_ID${N}" && az ad app delete --id "$AUTH_ID" 2>/dev/null
-    azd down --force --purge 2>/dev/null || azd down --force 2>/dev/null || true
+    [ -n "$BROWSER_AUTH_ID" ] && echo -e "  ${D}Deleting browser auth app registration: $BROWSER_AUTH_ID${N}" && az ad app delete --id "$BROWSER_AUTH_ID" 2>/dev/null
+    azd down --purge 2>/dev/null || azd down 2>/dev/null || true
     echo ""
     echo -e "  ${G}All resources deleted. Run 'devclaw up' to deploy fresh.${N}"
     echo ""
@@ -646,6 +648,7 @@ deploy)
     echo ""
     echo -e "  ${C}Rebuilding and deploying OpenClaw...${N}"
     echo ""
+    generate_runtime_bundle
     azd deploy
     echo ""
     echo -e "  ${G}Deployed! Run 'devclaw test' to verify.${N}"
@@ -691,6 +694,7 @@ teams)
         fi
         echo ""
         echo -e "  ${C}Redeploying app so MSTEAMS_* env vars take effect...${N}"
+        generate_runtime_bundle
         azd deploy
         echo ""
     fi

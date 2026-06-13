@@ -9,17 +9,34 @@ ARG HTTP_PROXY_VERSION=1.18.1
 # Some transitive deps reference git+ssh URLs (e.g. whiskeysockets/libsignal-node).
 # Without git the postinstall fails silently and the gateway crashes at boot.
 # We rewrite SSH→HTTPS so git clones work without SSH keys, and install
-# ca-certificates so git can verify GitHub's TLS certificate.
+# ca-certificates so git can verify GitHub's TLS certificate. Install `gh`
+# as well so hosted GitHub wrappers can function in standard ACA mode when
+# the deployment provides a token bridge.
 # apt validates package signatures against Debian's trusted keyring.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+    apt-get install -y --no-install-recommends git ca-certificates gh jq && \
     rm -rf /var/lib/apt/lists/* && \
+    GH_BIN="$(command -v gh)" && ln -sf "$GH_BIN" /usr/local/bin/gh && \
+    GIT_BIN="$(command -v git)" && ln -sf "$GIT_BIN" /usr/local/bin/git && \
+    JQ_BIN="$(command -v jq)" && ln -sf "$JQ_BIN" /usr/local/bin/jq && \
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     npm install -g openclaw@${OPENCLAW_VERSION}
 
 # Create directories for config and state
 RUN mkdir -p /root/.openclaw /mnt/state /opt/openclaw-auth
+
+COPY patch-openclaw-github-skill.mjs /opt/openclaw-auth/patch-openclaw-github-skill.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-github-skill.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-github-skill.mjs
+
+COPY patch-openclaw-skills-refresh.mjs /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-skills-refresh.mjs
+
+COPY patch-openclaw-binary-detection.mjs /opt/openclaw-auth/patch-openclaw-binary-detection.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/patch-openclaw-binary-detection.mjs && \
+    node /opt/openclaw-auth/patch-openclaw-binary-detection.mjs
 
 # Install the Microsoft Teams channel as an OpenClaw plugin.
 # As of 2026.4.10, msteams shipped as an external npm plugin (@openclaw/msteams)
@@ -68,6 +85,30 @@ RUN sed -i 's/\r$//' /opt/openclaw-auth/auth-proxy.mjs
 # ACA ingress targetPort).
 COPY gateway-proxy.mjs /opt/openclaw-auth/gateway-proxy.mjs
 RUN sed -i 's/\r$//' /opt/openclaw-auth/gateway-proxy.mjs
+
+COPY squad-runtime /opt/openclaw-squad
+COPY seed-squad-runtime.mjs /opt/openclaw-auth/seed-squad-runtime.mjs
+RUN sed -i 's/\r$//' /opt/openclaw-auth/seed-squad-runtime.mjs && \
+    node -e "const fs=require('fs');const bundle='/opt/openclaw-squad/runtime-bundle.json';const bridge='/opt/openclaw-squad/github-mcp-bridge.mjs';if(!fs.existsSync(bundle)){throw new Error('missing generated runtime bundle: run scripts/generate-squad-runtime-bundle.mjs before build');}if(!fs.existsSync(bridge)){throw new Error('missing staged GitHub MCP bridge asset: run scripts/generate-squad-runtime-bundle.mjs before build');}const b=JSON.parse(fs.readFileSync(bundle,'utf8'));if(!b?.provenance?.gitCommitSha||!b?.provenance?.sourceDigestSha256||!Array.isArray(b?.provenance?.sourceFiles)||!b.provenance.sourceFiles.length){throw new Error('runtime bundle missing authoritative provenance');}"
+
+COPY runtime-command-wrapper.sh /opt/openclaw-auth/runtime-command-wrapper.sh
+RUN sed -i 's/\r$//' /opt/openclaw-auth/runtime-command-wrapper.sh && chmod +x /opt/openclaw-auth/runtime-command-wrapper.sh && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/task && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/runSubagent && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/read_agent && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/ask_user && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_decide && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_read && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_write && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_append && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_delete && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_list && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/squad_state_health && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/code && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/codium && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/copilot && \
+    ln -sf /opt/openclaw-auth/runtime-command-wrapper.sh /usr/local/bin/github-copilot
 
 # PERMANENT FIX: extend the @openclaw/msteams plugin's Bot Framework serviceUrl
 # allowlist to include directline.botframework.com so Direct Line / Web Chat

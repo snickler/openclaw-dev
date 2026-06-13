@@ -20,7 +20,9 @@ Before spawning agents, determine the platform by checking available tools:
 
 2. **VS Code mode** — `runSubagent` or `agent` tool is available → conditional behavior. Use `runSubagent` with the task prompt. Drop `agent_type`, `mode`, and `model` parameters. Multiple subagents in one turn run concurrently (equivalent to background mode). Results return automatically — no `read_agent` needed.
 
-3. **Fallback mode** — neither `task` nor `runSubagent`/`agent` available → work inline. Do not apologize or explain the limitation. Execute the task directly.
+3. **Hosted OpenClaw mode** — neither `task` nor `runSubagent` is available, but generated hosted-runtime files are present and the runtime may expose OpenClaw-native coordination tools (`agent_to_agent`, `sessions_spawn`, `subagents`, `sessions_history`). Use those real hosted tools when present; otherwise use handoffs plus hosted wrapper docs. Do not imply repo checkout, worktrees, `sql`, or local editor integration.
+
+4. **Fallback mode** — neither spawn tools nor hosted-runtime markers available → work inline. Do not apologize or explain the limitation. Execute the task directly.
 
 If both `task` and `runSubagent` are available, prefer `task` (richer parameter surface).
 
@@ -38,20 +40,33 @@ When in VS Code mode, the coordinator changes behavior in these ways:
 - **`description`:** Drop it. The agent name is already in the prompt.
 - **Prompt content:** Keep ALL prompt structure — charter, identity, task, hygiene, response order blocks are surface-independent.
 
+### Hosted OpenClaw Adaptations
+
+When in hosted OpenClaw mode:
+
+- **Native coordination first.** Use `agent_to_agent` for specialist delegation/consultation. Use `sessions_spawn` + `subagents` + `sessions_yield` for background or parallel work when those tools are exposed.
+- **Manual handoff is fallback only.** If native coordination tools are absent, use the Agents view as the specialist-routing mechanism instead of pretending a subagent launch happened.
+- **Transcript recall is native.** Use `sessions_history`, `sessions_list`, or `subagents` instead of pretending `read_agent` exists.
+- **Generated wrapper docs are authoritative.** Prefer `HOSTED_RUNTIME.md`, `COMMANDS.md`, `HOSTED_GITHUB.md`, `HOSTED_MCP.md`, and `HOSTED_SKILLS.md`.
+- **GitHub is bridge-only.** Use GitHub MCP when loaded, or `gh` only when a token bridge already exists. Never suggest `gh auth login`, `gh auth switch`, profile edits, or local shell alias setup from the browser runtime.
+- **MCP is preloaded only.** If a server is missing, explain that the hosted deployment lacks that bridge; do not tell the user to live-edit `.copilot/mcp-config.json` or `.vscode/mcp.json` from the browser session.
+- **Repo/session workflows stay local.** `git worktree`, `copilot --resume`, `session_store`, and shell-profile mutation remain local CLI / VS Code workflows.
+
 ### Feature Degradation Table
 
-| Feature | CLI | VS Code | Degradation |
-|---------|-----|---------|-------------|
-| Parallel fan-out | `mode: "background"` + `read_agent` | Multiple subagents in one turn | None — equivalent concurrency |
-| Model selection | Per-spawn `model` param (4-layer hierarchy) | Session model only (Phase 1) | Accept session model, log intent |
-| Scribe fire-and-forget | Background, never read | Sync, must wait | Batch with last parallel group |
-| Launch table UX | Show table → results later | Skip table → results with response | UX only — results are correct |
-| SQL tool | Available | Not available | Avoid SQL in cross-platform code paths |
-| Response order bug | Critical workaround | Possibly necessary (unverified) | Keep the block — harmless if unnecessary |
+| Feature | CLI | VS Code | Hosted OpenClaw | Degradation |
+|---------|-----|---------|-----------------|-------------|
+| Parallel fan-out | `mode: "background"` + `read_agent` | Multiple subagents in one turn | `sessions_spawn` / `subagents` when exposed; otherwise Agents view handoffs | Hosted loses CLI per-spawn knobs and may fall back to manual routing |
+| Model selection | Per-spawn `model` param (4-layer hierarchy) | Session model only (Phase 1) | Hosted runtime default only | Accept surface default |
+| Scribe fire-and-forget | Background, never read | Sync, must wait | Not available as a browser workflow | Hosted uses generated summaries instead |
+| Launch table UX | Show table → results later | Skip table → results with response | Not applicable — use native session status or the Agents view | UX only |
+| SQL / session_store | Available | Not available | Not available | Avoid SQL-dependent flows outside CLI |
+| Repo / worktree ops | Available when repo is mounted | Available when repo is opened | Not guaranteed; assume absent | Hosted must not promise branch/worktree flows |
+| Response order bug | Critical workaround | Possibly necessary (unverified) | Usually not needed — OpenClaw owns session delivery | Keep the block only where native hosted tools are absent |
 
 ### SQL Tool Caveat
 
-The `sql` tool is **CLI-only**. It does not exist on VS Code, JetBrains, or GitHub.com. Any coordinator logic or agent workflow that depends on SQL (todo tracking, batch processing, session state) will silently fail on non-CLI surfaces. Cross-platform code paths must not depend on SQL. Use filesystem-based state (`.squad/` files) for anything that must work everywhere.
+The `sql` tool is **CLI-only**. It does not exist on VS Code, JetBrains, GitHub.com, or hosted OpenClaw. Any coordinator logic or agent workflow that depends on SQL (todo tracking, batch processing, session state) will silently fail on non-CLI surfaces. Cross-platform code paths must not depend on SQL. Use filesystem-based state (`.squad/` files) for anything that must work everywhere, and hosted-runtime wrapper docs when the browser deployment is the only exposed surface.
 
 ## Examples
 

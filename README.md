@@ -34,7 +34,7 @@ The idea: an ephemeral cloud sandbox for OpenClaw — gated by your Microsoft si
 ### Prerequisites
 
 - [Azure CLI](https://aka.ms/install-azure-cli) + [Azure Developer CLI](https://aka.ms/azd-install)
-- An Azure subscription ([free](https://azure.microsoft.com/free)) and tenant where you can create one Entra ID app registration (the Easy Auth login gate). A second Bot app registration is only created if you opt into the [Teams add-on](#teams-setup).
+- An Azure subscription ([free](https://azure.microsoft.com/free)) and tenant where you can create one Entra ID app registration for the sandbox browser-login proxy. A second Bot app registration is only created if you opt into the [Teams add-on](#teams-setup).
 - Either local [Docker Desktop](https://www.docker.com/products/docker-desktop/) running **or** use the default `remoteBuild: true` in [azure.yaml](azure.yaml) (no local Docker needed; ACR builds the image)
 - PowerShell 7+ (`pwsh`) if you're on Windows and plan to use the optional Teams add-on (used to build the Teams sideload zip)
 
@@ -51,11 +51,11 @@ cd openclaw-dev
 .\devclaw.cmd up
 ```
 
-`devclaw up` provisions the baseline Azure resources for ACA Sandbox deployment, which requires a custom Node.js disk image or bootstrap strategy (see "Disk image provisioning" below). For **standard Azure Container Apps** (legacy, storage-persistent), use `azd env set ACA_SANDBOX_MODE standard` before `devclaw up`. You may also optionally enable **Express mode** for faster cold-start with `azd env set USE_EXPRESS_ENV true` when using standard mode.
+`devclaw up` provisions the baseline Azure resources for ACA Sandbox deployment, including the Entra app registration used by the in-sandbox OIDC browser-login proxy. `devclaw sandbox build` then builds the disk image, creates the sandbox runtime, exposes an **anonymous** ACA sandbox public port, and lets the in-app proxy own login/callback/session handling. For **standard Azure Container Apps** (legacy, storage-persistent), use `azd env set ACA_SANDBOX_MODE standard` before `devclaw up`. You may also optionally enable **Express mode** for faster cold-start with `azd env set USE_EXPRESS_ENV true` when using standard mode.
 
 ### Disk image provisioning (required for Sandbox)
 
-⚠️ **Current state:** Sandbox disk registration is **CI-first** and image-driven. `devclaw sandbox build` (or the Phase 3 workflow) builds `src/Dockerfile.sandbox` in ACR, then registers that image as an ACA Sandbox disk using short-lived ACR tokens (no local Docker/qemu fallback).
+⚠️ **Current state:** Sandbox disk registration is **CI-first** and image-driven. `devclaw sandbox build` (or the Phase 3 workflow) first generates `src/squad-runtime/runtime-bundle.json` from the authoritative Squad sources, then builds `src/Dockerfile.sandbox` in ACR using **`src/` as the build context**, and finally registers that image as an ACA Sandbox disk using short-lived ACR tokens (no local Docker/qemu fallback).
 
 ACR auth for private-image disk registration is deterministic: `scripts/register-sandbox-disk.py` automatically runs `az acr login --expose-token` and passes the ephemeral token to `aca sandboxgroup disk create`.
 
@@ -65,7 +65,7 @@ ACR auth for private-image disk registration is deterministic: `scripts/register
 devclaw sandbox build
 ```
 
-That remotely builds the sandbox runtime image in ACR, registers the disk in the sandbox group, and creates the sandbox from it.
+That remotely builds the sandbox runtime image in ACR, registers the disk in the sandbox group, creates the sandbox from it, exposes the public port anonymously, applies the in-app browser allowlist, and validates the Entra OIDC login redirect.
 
 **Bring your own CI-built image (optional):**
 
@@ -76,12 +76,19 @@ devclaw sandbox build
 
 `devclaw sandbox build` will use `SANDBOX_SOURCE_IMAGE` directly and skip the image build step.
 
-### Sandbox runtime startup contract (to avoid 502)
+### Sandbox runtime startup contract (to avoid 502 / platform 401)
 
 `src/Dockerfile.sandbox` must include:
 - `/opt/entrypoint.sh` as the entrypoint
 - `gateway-proxy.mjs` listening on `:18789`
 - OpenClaw gateway on internal `:18788` (started by entrypoint)
+- an app-owned Entra OIDC layer in `gateway-proxy.mjs` that owns browser login, callback, session cookies, and WebSocket gating
+- the generated Squad runtime payload under `src/squad-runtime/runtime-bundle.json` plus `seed-squad-runtime.mjs`, so the durable sandbox image carries the hosted Squad projection without widening Docker build context beyond `src/`
+
+**Current ACA Sandbox limitation:** the platform does **not** reliably auto-run the image entrypoint after `aca sandbox create`, so `devclaw sandbox build` explicitly bootstraps `/opt/entrypoint.sh` with `aca sandbox exec` after sandbox creation. The same flow also passes the browser allowlist (`BROWSER_AUTH_ALLOWED_USERS` and optional `BROWSER_AUTH_ALLOWED_OBJECT_IDS`) into the sandbox and validates:
+- `GET /healthz` → `200`
+- `GET /` → `302 /oidc/login?...`
+- `GET /oidc/login` → `302 https://login.microsoftonline.com/...`
 
 Post-create verification command:
 
@@ -131,13 +138,28 @@ For Phase 1-2 sandbox QA checks (smoke + fallback/regression assertions), run:
 
 ### Open the WebChat UI
 
-After deployment, open the URL from `devclaw status` in your browser. If Entra ID Easy Auth is configured, you'll be prompted to sign in with your Microsoft account. After that the chat UI loads automatically with no further credentials needed.
+After sandbox deployment, open the URL printed by `devclaw sandbox build` (or `azd env get-value PUBLIC_BASE_URL`) in your browser. The sandbox public port is anonymous at the platform layer, but the in-app OIDC proxy immediately redirects the browser to Microsoft sign-in and then returns to the WebChat UI with an HttpOnly session cookie.
+
+After sign-in, the default agent is **Squad**. The hosted runtime now derives that experience from a **generated runtime bundle** built from the repo's authoritative Squad sources (contract, roster, routing, charter summaries, and RAI policy), so the Control UI callout and Agents view reflect the actual Squad contract without exposing raw mutable Squad state in the hosted runtime.
+
+### Hosted GitHub / MCP caveats
+
+- Hosted GitHub issue/backlog features only work through bridges that are already present in the deployment: GitHub MCP when explicitly configured with a reviewed server package, or `gh` when the runtime has a `GH_TOKEN` / `GITHUB_TOKEN`.
+- The built-in OpenClaw `/skills` GitHub card is a separate hosted surface from repo MCP config. It is only unblocked when `gh` is on PATH. This image now installs `gh`, symlinks it into `/usr/local/bin/gh`, and patches the bundled skill so Linux-hosted runtimes prefer apt guidance instead of a misleading brew button.
+- If that built-in `/skills` card still reports `bin:gh` while `gh` is already present, treat it as stale requirement-detection / skills-snapshot state. The image now patches OpenClaw's skills refresh module so persisted sessions re-evaluate skill requirements on each runtime boot.
+- Exact config split: repo-level `.mcp.json` remains `squad_state`-only, while `.copilot/mcp-config.json` ships the hosted GitHub `github` bridge wrapper (`scripts/github-mcp-bridge.mjs`).
+- When `GITHUB_TOKEN` / `GH_TOKEN` / provider token is present, that Copilot-side wrapper launches the configured, reviewed GitHub MCP server package; when no token bridge exists it degrades to a status-only MCP tool instead of silently implying GitHub capability.
+- In ACA Sandbox custom images, attaching a `github-copilot` credential alone does **not** currently surface auth inside the runtime. Keep `SANDBOX_GITHUB_COPILOT_PAT` set when you run `devclaw sandbox build` / `upload` if you want non-interactive `gh` auth in hosted sessions.
+- Standard Container Apps mode now includes the `gh` binary and can accept an optional secret-backed `GITHUB_TOKEN` bridge via `azd env set GITHUB_TOKEN <token>` before `devclaw up` / `devclaw deploy`. That token is exposed to the runtime as both `GITHUB_TOKEN` and `GH_TOKEN`.
+- Hosted runtime boot now forces `GH_PROMPT_DISABLED=1`; interactive `gh auth login` is not a supported auth path there. Use `GH_TOKEN`, `GITHUB_TOKEN`, provider token, or an explicitly mounted `GH_CONFIG_DIR` instead.
+- `src/openclaw.json` currently enables only the `msteams` plugin path, so hosted GitHub/MCP behavior is delivered through projected workspace docs/skills plus external bridges, not an OpenClaw plugin.
+- Skills that depend on Copilot CLI session history, VS Code subagents, git worktrees, shell-profile mutation, or local MCP config files are projected as guidance only in the hosted runtime; use a repo-connected CLI or VS Code session for those flows.
 
 <a id="teams-setup"></a>
 ## Optional: Microsoft Teams add-on
 
 Microsoft Teams is **not** set up by default — `devclaw up` only provisions the
-browser experience (Container App + Easy Auth login). The Teams add-on adds a
+browser experience (Sandbox + in-app Entra OIDC login by default; Easy Auth only on the legacy standard Container Apps path). The Teams add-on adds a
 second Entra ID app registration (for the bot), an Azure Bot resource, and the
 Teams channel. Keep it off if your tenant blocks bot app registrations or you
 don't need phone access.
@@ -338,8 +360,8 @@ This template applies **five independent layers** of defense, each guarding some
 
 | Layer | What it does |
 |---|---|
-| **1. Entra ID Easy Auth** | Microsoft login required before any request reaches the container. Deployed automatically by `devclaw up`. Unauthenticated requests get a 401. Scoped to your tenant. |
-| **2. Gateway token** | A random per-container token is injected into the SPA at startup. Even an authenticated user cannot call the WebSocket API without it. |
+| **1. In-sandbox Entra OIDC proxy** | Browser requests hit an anonymous ACA sandbox port, but `gateway-proxy.mjs` immediately redirects to Microsoft sign-in, validates the tenant/issuer/audience/redirect URI, checks an explicit allowlist, and issues a secure HttpOnly session cookie only for approved principals. |
+| **2. OpenClaw trusted-proxy auth** | The browser never receives the OpenClaw gateway token. The proxy injects `x-forwarded-user` and required trusted headers to the internal gateway, which only listens on loopback. |
 | **3. Managed Identity (no model API keys)** | The container authenticates to the model endpoint via short-lived Entra ID tokens. `disableLocalAuth: true` means model API keys don't even exist. |
 | **4. AOAI content filters (blocking by default)** | The deployed Azure OpenAI RAI policy keeps `Jailbreak` and `Indirect Attack` input detections in blocking mode and keeps standard harm filters enabled for prompt/completion flows. |
 | **5. Ephemeral container** | State is on Azure Files; the container itself is disposable. `devclaw down && devclaw up` = clean slate in 6 minutes. |
@@ -351,12 +373,19 @@ This template applies **five independent layers** of defense, each guarding some
 - **Container runs as root.** Add a non-root user for hardened deployments.
 - **Conversations flow through the model endpoint.** Don't paste highly sensitive data.
 
-### Adding Entra ID Easy Auth
+### Browser sign-in
 
-Easy Auth is configured automatically by `devclaw up`. The preprovision hook creates an Entra ID app registration, Bicep enables the auth config on the Container App, and the postprovision hook updates the redirect URI. No manual steps needed.
+Sandbox mode configures browser sign-in automatically. The preprovision hook creates an Entra app registration for the in-container OIDC proxy, defaults `BROWSER_AUTH_ALLOWED_USERS` to the current deployer account, optionally caches the deployer's object ID in `BROWSER_AUTH_ALLOWED_OBJECT_IDS`, and `devclaw sandbox build` adds the exact `PUBLIC_BASE_URL/oidc/callback` redirect URI once the sandbox URL exists.
 
-To restrict access to specific users or groups, update the app registration in the Azure Portal:
-1. **Azure Portal** → **Entra ID** → **App registrations** → `openclaw-auth-<env>`
+To expand access, set a comma-separated allowlist before rebuilding the sandbox runtime:
+
+```bash
+azd env set BROWSER_AUTH_ALLOWED_USERS "alice@contoso.com,bob@contoso.com"
+devclaw sandbox build
+```
+
+To further restrict access to specific users or groups, update the app registration in the Azure Portal:
+1. **Azure Portal** → **Entra ID** → **App registrations** → `openclaw-browser-<env>`
 2. **Properties** → **Assignment required?** → **Yes**
 3. **Enterprise applications** → assign specific users/groups
 
@@ -375,7 +404,7 @@ To restrict access to specific users or groups, update the app registration in t
 | **Azure OpenAI in Foundry Models** | LLM backend via the OpenAI-compatible `/openai/v1/` API. Keyless (`disableLocalAuth: true`). Default: `gpt-5-mini`. Azure OpenAI models only today. |
 | **Azure Bot Service** | Bot Framework registration that fronts the Teams channel; routes inbound Teams activity to the container's `/api/messages` |
 | **Managed Identity** | Container → model auth via short-lived Entra ID tokens |
-| **Entra ID Easy Auth** | Microsoft login required before reaching the WebChat UI. `/api/messages` is excluded so Bot Framework can call in with its own JWT |
+| **In-sandbox Entra OIDC proxy** | Browser sign-in, callback handling, session cookies, and WebSocket gating. ACA sandbox port is anonymous; `/api/messages` stays on the exact proxy path for Bot Framework when Teams is enabled |
 | **Azure Files** | Persists credentials, workspace, sessions across restarts |
 | **Container Registry** | Stores the container image |
 | **Log Analytics** | Container and gateway logs |
@@ -384,15 +413,15 @@ Inside the container there are three Node processes started by [src/entrypoint.s
 
 | Process | Port | Role |
 |---|---|---|
-| **gateway-proxy** ([src/gateway-proxy.mjs](src/gateway-proxy.mjs)) | `0.0.0.0:18789` (public) | Terminates ACA ingress; routes `POST /api/messages` to the msteams plugin on `:3978` and everything else to the OpenClaw gateway on `:18788` |
-| **OpenClaw gateway** | `127.0.0.1:18788` | WebChat UI + WebSocket API; loads the msteams plugin which spawns the webhook on `:3978` |
+| **gateway-proxy** ([src/gateway-proxy.mjs](src/gateway-proxy.mjs)) | `0.0.0.0:18789` (public) | Terminates ACA ingress; owns Entra OIDC login/callback/session cookies for browser traffic; routes `POST /api/messages` to the msteams plugin on `:3978` and authenticated browser traffic to the OpenClaw gateway on `:18788` |
+| **OpenClaw gateway** | `127.0.0.1:18788` | WebChat UI + WebSocket API; runs in `trusted-proxy` mode behind the loopback proxy and loads the msteams plugin which spawns the webhook on `:3978` |
 | **auth-proxy** ([src/auth-proxy.mjs](src/auth-proxy.mjs)) | `127.0.0.1:18790` | Injects a fresh Entra ID bearer token from `DefaultAzureCredential` on every forwarded request to AOAI |
 
 ```mermaid
 graph LR
     User["👤 User<br/>Browser / Mobile"]
     Teams["💬 Microsoft Teams<br/>Bot Framework"]
-    EasyAuth["🔐 Entra ID Easy Auth<br/>Microsoft login gate<br/>(excludes /api/messages)"]
+    BrowserAuth["🔐 Entra OIDC reverse proxy<br/>login + callback + session cookie"]
     subgraph Host["Host (Azure Container Apps today)"]
         Proxy["🔀 gateway-proxy<br/>:18789"]
         GW["🦞 OpenClaw Gateway<br/>:18788 · token auth"]
@@ -403,16 +432,16 @@ graph LR
     MI["Managed Identity<br/>Entra ID token"]
     AF["Azure Files<br/>credentials / workspace / sessions"]
 
-    User -->|"HTTPS"| EasyAuth
-    EasyAuth -->|"Authenticated"| Proxy
+    User -->|"HTTPS"| BrowserAuth
+    BrowserAuth -->|"Authenticated session"| Proxy
     Teams -->|"Bot Framework JWT"| Proxy
     Proxy -->|"/api/messages"| MST
-    Proxy -->|"all other paths"| GW
+    Proxy -->|"trusted-proxy headers"| GW
     MST -->|"channel events"| GW
     GW -->|"OpenAI REST API"| Auth
     Auth -->|"Bearer token"| AOAI
     GW -.->|"Volume mount"| AF
-    MI -.->|"RBAC: Cognitive Services User"| AOAI
+    MI -.->|"RBAC: Cognitive Services User + OpenAI User"| AOAI
 ```
 
 ### SDKs and libraries

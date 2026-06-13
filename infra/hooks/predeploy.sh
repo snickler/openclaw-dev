@@ -2,6 +2,17 @@
 # predeploy.sh — Configure Docker Hub credentials on ACR for remote CI-style builds.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GENERATOR="$ROOT/scripts/generate-squad-runtime-bundle.mjs"
+
+if ! command -v node >/dev/null 2>&1; then
+    echo "[predeploy] Node.js is required to generate the hosted Squad runtime bundle." >&2
+    exit 1
+fi
+
+echo "[predeploy] Generating hosted Squad runtime bundle from authoritative sources..."
+node "$GENERATOR" --repo-root "$ROOT"
+
 # Resolve resource group
 RG=$(azd env get-value AZURE_RESOURCE_GROUP 2>/dev/null || echo "")
 if [ -z "$RG" ]; then RG="rg-${AZURE_ENV_NAME:-}"; fi

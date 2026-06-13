@@ -1,7 +1,7 @@
 {
   "gateway": {
     "mode": "local",
-    "trustedProxies": ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12"],
+    "trustedProxies": ["127.0.0.1", "::1"],
     "controlUi": {
       "enabled": true,
       "allowedOrigins": ["*"],
@@ -15,9 +15,24 @@
       "visibleReplies": "automatic"
     }
   },
+  "session": {
+    "agentToAgent": {
+      "maxPingPongTurns": 8
+    }
+  },
   "agents": {
     "defaults": {
       "model": "openai/gpt-5.4-mini"
+    }
+  },
+  "skills": {
+    "entries": {
+      "github": {
+        "enabled": true
+      },
+      "gh-issues": {
+        "enabled": true
+      }
     }
   },
   "channels": {
@@ -41,6 +56,21 @@
       "msteams": {
         "enabled": true
       }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "github": {
+        "command": "node",
+        "args": [
+          "/opt/openclaw-squad/github-mcp-bridge.mjs"
+        ]
+      }
+    }
+  },
+  "tools": {
+    "agentToAgent": {
+      "enabled": true
     }
   },
   "models": {

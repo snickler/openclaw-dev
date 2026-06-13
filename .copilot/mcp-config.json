@@ -12,14 +12,14 @@
         "*"
       ]
     },
-    "EXAMPLE-github": {
-      "command": "npx",
+    "github": {
+      "command": "node",
       "args": [
-        "-y",
-        "@anthropic/github-mcp-server"
+        "scripts/github-mcp-bridge.mjs"
       ],
       "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+        "GH_TOKEN": "${GH_TOKEN}"
       }
     }
   }

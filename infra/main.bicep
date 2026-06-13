@@ -39,6 +39,10 @@ param botAppId string = ''
 @secure()
 param botAppSecret string = ''
 
+@description('Optional GitHub token bridge for the standard ACA runtime. Set GITHUB_TOKEN in your azd env when you want hosted gh / token-backed GitHub MCP access outside ACA Sandbox.')
+@secure()
+param githubToken string = ''
+
 @description('Bot Tenant ID')
 param botTenantId string = subscription().tenantId
 
@@ -126,6 +130,7 @@ module host 'aca.bicep' = {
     openaiResourceId: openai.outputs.AZURE_OPENAI_RESOURCE_ID
     botAppId: botAppId
     botAppSecret: botAppSecret
+    githubToken: githubToken
     botTenantId: botTenantId
     easyAuthAppId: easyAuthAppId
     containerImage: containerImage

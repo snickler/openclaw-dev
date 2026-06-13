@@ -5,6 +5,7 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@azure/identity": "4.13.1",
-    "http-proxy": "1.18.1"
+    "http-proxy": "1.18.1",
+    "jose": "6.2.3"
   }
 }

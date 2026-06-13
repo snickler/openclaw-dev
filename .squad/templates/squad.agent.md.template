@@ -421,11 +421,11 @@ Use silent fallback chains when a chosen model is unavailable, and omit the `mod
 
 ### Client Compatibility
 
-Detect the client surface once per session and adapt spawning behavior accordingly: CLI uses `task`/`read_agent`, VS Code uses `runSubagent`, and inline work is last-resort fallback only.
+Detect the client surface once per session and adapt spawning behavior accordingly: CLI uses `task`/`read_agent`, VS Code uses `runSubagent`, hosted OpenClaw uses OpenClaw-native coordination tools (`agent_to_agent`, `sessions_spawn`, `subagents`) when exposed and falls back to agent switching plus generated hosted wrappers, and inline work is last-resort fallback only.
 
 Do not rely on CLI-only capabilities such as per-spawn model control or the `sql` tool in cross-platform paths.
 
-**On-demand reference:** Read `.squad/templates/client-compatibility-reference.md` for platform detection, VS Code adaptations, feature degradation, and SQL caveats.
+**On-demand reference:** Read `.squad/templates/client-compatibility-reference.md` for platform detection, VS Code/hosted OpenClaw adaptations, feature degradation, and SQL caveats.
 
 ### MCP Integration
 
@@ -459,8 +459,9 @@ When spawning agents, include an `MCP TOOLS AVAILABLE` block in the prompt (see 
 Never crash or halt because an MCP tool is missing. MCP tools are enhancements, not dependencies.
 
 1. **CLI fallback** — GitHub MCP missing → use `gh` CLI. Azure MCP missing → use `az` CLI.
-2. **Inform the user** — "Trello integration requires the Trello MCP server. Add it to `.copilot/mcp-config.json`."
-3. **Continue without** — Log what would have been done, proceed with available tools.
+2. **Hosted OpenClaw fallback** — if an MCP server is not already loaded into the hosted browser runtime, explain that the deployment/session lacks that bridge. Do not tell the user to live-edit `.vscode/mcp.json` or user-local config from the hosted session, and do not assume `.mcp.json` and `.copilot/mcp-config.json` expose the same servers.
+3. **Inform the user** — "Trello integration requires the Trello MCP server. Add it to the MCP config surface used by this client (for Copilot clients, `.copilot/mcp-config.json`)."
+4. **Continue without** — Log what would have been done, proceed with available tools.
 
 ### Eager Execution Philosophy
 
@@ -838,11 +839,12 @@ Squad can connect to a GitHub repository's issues and manage the full issue → 
 
 ### Prerequisites
 
-Before connecting to a GitHub repository, verify that the `gh` CLI is available and authenticated:
+Before connecting to a GitHub repository, verify GitHub access in this order:
 
-1. Run `gh --version`. If the command fails, tell the user: *"GitHub Issues Mode requires the GitHub CLI (`gh`). Install it from https://cli.github.com/ and run `gh auth login`."*
-2. Run `gh auth status`. If not authenticated, tell the user: *"Please run `gh auth login` to authenticate with GitHub."*
-3. **Fallback:** If the GitHub MCP server is configured (check available tools), use that instead of `gh` CLI. Prefer MCP tools when available; fall back to `gh` CLI.
+1. If GitHub MCP tools are already visible, use them first.
+2. Otherwise run `gh --version`. If the command fails in hosted OpenClaw, explain that the deployment lacks the GitHub CLI bridge; do **not** tell the user to install local tooling from the browser runtime. Outside hosted OpenClaw, tell the user to install `gh` from https://cli.github.com/.
+3. Run `gh auth status`. If not authenticated in hosted OpenClaw, explain that hosted GitHub access requires a pre-provisioned `GH_TOKEN` / `GITHUB_TOKEN` bridge. Outside hosted OpenClaw, tell the user to run `gh auth login`.
+4. **Hosted OpenClaw note:** backlog and issue inspection can use GitHub MCP or a pre-provisioned `GH_TOKEN` / `GITHUB_TOKEN` bridge, but branch/worktree/commit/PR execution still requires a repo-connected CLI or VS Code session.
 
 ### Triggers
 

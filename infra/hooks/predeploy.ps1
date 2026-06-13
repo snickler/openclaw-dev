@@ -1,6 +1,19 @@
 # predeploy.ps1 — Configure Docker Hub credentials on ACR for remote CI-style builds.
 $ErrorActionPreference = "Stop"
 
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$generator = Join-Path $root "scripts\generate-squad-runtime-bundle.mjs"
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw "[predeploy] Node.js is required to generate the hosted Squad runtime bundle."
+}
+
+Write-Host "[predeploy] Generating hosted Squad runtime bundle from authoritative sources..."
+& node $generator --repo-root $root
+if ($LASTEXITCODE -ne 0) {
+    throw "[predeploy] Failed to generate hosted Squad runtime bundle."
+}
+
 # Resolve resource group
 $rg = (azd env get-value AZURE_RESOURCE_GROUP 2>$null)
 if (-not $rg) { $rg = "rg-$env:AZURE_ENV_NAME" }

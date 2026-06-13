@@ -33,7 +33,16 @@ if "%COMMAND%"=="teams" goto :teams
 if "%COMMAND%"=="sandbox" goto :sandbox
 if "%COMMAND%"=="squad" goto :squad
 goto :help
-
+:generate_runtime_bundle
+where node >nul 2>&1
+if errorlevel 1 (
+    echo   Node.js is required to generate the hosted Squad runtime bundle.
+    exit /b 1
+)
+echo   Generating hosted Squad runtime bundle from authoritative sources...
+call node "%~dp0scripts\generate-squad-runtime-bundle.mjs" --repo-root "%~dp0"
+if errorlevel 1 exit /b 1
+exit /b 0
 :login
 echo.
 echo   Logging into Azure...
@@ -52,6 +61,8 @@ if /i "%HOST_MODE%"=="sandbox" (
     echo   Sandbox mode detected ^(ACA_SANDBOX_MODE=sandbox^): running infrastructure provision only.
     call azd provision
 ) else (
+    call :generate_runtime_bundle
+    if errorlevel 1 exit /b 1
     call azd up
 )
 if errorlevel 1 (
@@ -100,7 +111,12 @@ for /f "tokens=*" %%i in ('call azd env get-value EASYAUTH_APP_ID 2^>nul') do (
     echo   Deleting Easy Auth app registration: %%i
     call az ad app delete --id %%i 2>nul
 )
-call azd down --force --purge
+for /f "tokens=*" %%i in ('call azd env get-value BROWSER_AUTH_CLIENT_ID 2^>nul') do (
+    echo   Deleting browser auth app registration: %%i
+    call az ad app delete --id %%i 2>nul
+)
+call azd down --purge
+if errorlevel 1 call azd down
 echo   All resources deleted.
 echo.
 exit /b 0
@@ -220,6 +236,8 @@ exit /b 0
 :deploy
 echo.
 echo   Rebuilding and deploying OpenClaw...
+call :generate_runtime_bundle
+if errorlevel 1 exit /b 1
 call azd deploy
 echo   Deployed! Run 'devclaw test' to verify.
 echo.
@@ -270,6 +288,8 @@ if "%BOT_ID%"=="" (
     )
     echo.
     echo   Redeploying app so MSTEAMS_* env vars take effect...
+    call :generate_runtime_bundle
+    if errorlevel 1 exit /b 1
     call azd deploy
     echo.
 )
@@ -381,12 +401,22 @@ set "SANDBOX_IMAGE=%7"
 if "%SANDBOX_IMAGE%"=="" set "SANDBOX_IMAGE=%SANDBOX_SOURCE_IMAGE%"
 if "%SANDBOX_IMAGE%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_SOURCE_IMAGE 2^>nul') do set "SANDBOX_IMAGE=%%i"
 if "%SANDBOX_IMAGE%"=="" for /f "tokens=*" %%i in ('call azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2^>nul') do set "SANDBOX_IMAGE=%%i"
+if "%7"=="" if not "%SANDBOX_EMAIL%"=="" (
+    echo %SANDBOX_EMAIL%| findstr /c:"/" /c:":" >nul
+    if not errorlevel 1 (
+        set "SANDBOX_IMAGE=%SANDBOX_EMAIL%"
+        set "SANDBOX_EMAIL="
+    )
+)
 for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_DISK_NAME 2^>nul') do set "SANDBOX_DISK_NAME=%%i"
 for /f "tokens=*" %%i in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "GIT_COMMIT=%%i"
 if "%GIT_COMMIT%"=="" set "GIT_COMMIT=unknown"
-if "%SANDBOX_DISK_NAME%"=="" for /f "tokens=*" %%i in ('git -C "%~dp0" rev-parse --short HEAD 2^>nul') do set "SHORT_SHA=%%i"
+for /f "tokens=*" %%i in ('git -C "%~dp0" rev-parse --short HEAD 2^>nul') do set "SHORT_SHA=%%i"
 if "%SHORT_SHA%"=="" set "SHORT_SHA=nogit"
 if "%SANDBOX_DISK_NAME%"=="" set "SANDBOX_DISK_NAME=openclaw-%SANDBOX_SQUAD%-%SANDBOX_REGION%-%SHORT_SHA%"
+set "SANDBOX_RUNTIME_GIT_DIRTY=false"
+git -C "%~dp0" diff --quiet --ignore-submodules HEAD -- >nul 2>&1
+if errorlevel 1 set "SANDBOX_RUNTIME_GIT_DIRTY=true"
 
 echo.
 echo   Registering Sandbox disk image in ACA...
@@ -410,8 +440,16 @@ if "%SANDBOX_IMAGE%"=="" (
     )
     for /f "tokens=1 delims=." %%i in ("%ACR_LOGIN_SERVER%") do set "ACR_NAME=%%i"
     set "SANDBOX_IMAGE=%ACR_LOGIN_SERVER%/openclaw-azure/openclaw-sandbox-core:sandbox-%SHORT_SHA%"
-    echo   Building sandbox runtime image in ACR ^(CI-compatible, no local Docker^)...
-    call az acr build -r "%ACR_NAME%" -f "%~dp0src\Dockerfile.sandbox" --platform linux/amd64 -t "%SANDBOX_IMAGE%" "%~dp0src" --no-logs
+    where node >nul 2>&1
+    if errorlevel 1 (
+        echo   Node.js is required to generate the hosted Squad runtime bundle.
+        exit /b 1
+    )
+    echo   Generating hosted Squad runtime bundle from authoritative sources...
+    call node "%~dp0scripts\generate-squad-runtime-bundle.mjs" --repo-root "%~dp0" --git-commit "%GIT_COMMIT%" --git-short-commit "%SHORT_SHA%" --git-dirty "%SANDBOX_RUNTIME_GIT_DIRTY%"
+    if errorlevel 1 exit /b 1
+    echo   Building sandbox runtime image in ACR from the repo-root build context ^(CI-compatible, no local Docker^)...
+    call az acr build -r "%ACR_NAME%" -f "%~dp0src\Dockerfile.sandbox" --platform linux/amd64 -t "%SANDBOX_IMAGE%" --build-arg "SQUAD_RUNTIME_GIT_COMMIT=%GIT_COMMIT%" --build-arg "SQUAD_RUNTIME_GIT_SHORT_COMMIT=%SHORT_SHA%" --build-arg "SQUAD_RUNTIME_GIT_DIRTY=%SANDBOX_RUNTIME_GIT_DIRTY%" "%~dp0" --no-logs
     if errorlevel 1 exit /b 1
 )
 python "%~dp0scripts\register-sandbox-disk.py" --subscription "%SANDBOX_SUBSCRIPTION%" --resource-group "%SANDBOX_RG%" --sandbox-group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --disk-name "%SANDBOX_DISK_NAME%" --image "%SANDBOX_IMAGE%" --metadata-path "%SANDBOX_METADATA%" --label squad=%SANDBOX_SQUAD% --label git_commit=%GIT_COMMIT% --label source=devclaw
@@ -445,44 +483,32 @@ if not "%SANDBOX_COPILOT_PAT%"=="" (
 )
 set "SANDBOX_DISK_ID=%DISK_ID%"
 if "%SANDBOX_DISK_ID%"=="" for /f "tokens=*" %%i in ('call azd env get-value SANDBOX_DISK_IMAGE_ID 2^>nul') do set "SANDBOX_DISK_ID=%%i"
-set "SANDBOX_DISK_ARGS=--disk %SANDBOX_DISK_NAME%"
-if not "%SANDBOX_DISK_ID%"=="" set "SANDBOX_DISK_ARGS=--disk-id %SANDBOX_DISK_ID%"
-if "%SANDBOX_CREDENTIAL_ARGS%"=="" (
-    call aca sandbox create --group "sg-%SANDBOX_SQUAD%" %SANDBOX_DISK_ARGS% --label app=openclaw --label env=%SANDBOX_SQUAD%
-) else (
-    call aca sandbox create --group "sg-%SANDBOX_SQUAD%" %SANDBOX_DISK_ARGS% %SANDBOX_CREDENTIAL_ARGS% --label app=openclaw --label env=%SANDBOX_SQUAD%
-)
-set "SANDBOX_OPENAI_ENDPOINT="
-for /f "tokens=*" %%i in ('call azd env get-value AZURE_OPENAI_ENDPOINT 2^>nul') do set "SANDBOX_OPENAI_ENDPOINT=%%i"
-if not "%SANDBOX_OPENAI_ENDPOINT%"=="" (
-    set "SANDBOX_OPENAI_BASE_URL=%SANDBOX_OPENAI_ENDPOINT%/openai/v1/"
-    if "%SANDBOX_OPENAI_ENDPOINT:~-1%"=="/" set "SANDBOX_OPENAI_BASE_URL=%SANDBOX_OPENAI_ENDPOINT%openai/v1/"
-    echo   Bootstrapping OpenClaw inside sandbox...
-    call aca sandbox exec --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% --command "sh -lc 'nohup env OPENAI_BASE_URL=%SANDBOX_OPENAI_BASE_URL% AZURE_OPENAI_AUTH=managed-identity /opt/entrypoint.sh >/tmp/openclaw-bootstrap.log 2>&1 </dev/null &'"
-)
-if not "%SANDBOX_EMAIL%"=="" call aca sandbox port add --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% --port 18789 --email "%SANDBOX_EMAIL%"
-set "SANDBOX_ENDPOINT="
-set "SANDBOX_PORTS_JSON="
-for /f "usebackq delims=" %%i in (`aca sandbox port list --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% -o json 2^>nul`) do set "SANDBOX_PORTS_JSON=%%i"
-if not "%SANDBOX_PORTS_JSON%"=="" (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "$items = ConvertFrom-Json @'%SANDBOX_PORTS_JSON%'@; if ($items -isnot [System.Array]) { $items = @($items) }; foreach ($item in $items) { if ($item.url) { Write-Output ($item.url.TrimEnd('/')); break }; if ($item.endpoint) { Write-Output ($item.endpoint.TrimEnd('/')); break }; $host = $item.fqdn; if (-not $host) { $host = $item.hostName }; if (-not $host) { $host = $item.hostname }; if (-not $host) { $host = $item.dnsName }; if ($host) { Write-Output ('https://' + $host.TrimEnd('/')); break } }"`) do set "SANDBOX_ENDPOINT=%%i"
-)
-if not "%SANDBOX_ENDPOINT%"=="" (
-    echo   Waiting for sandbox endpoint readiness: %SANDBOX_ENDPOINT%/healthz
-    set "SANDBOX_READY="
-    for /l %%n in (1,1,24) do (
-        for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri '%SANDBOX_ENDPOINT%/healthz' -Method GET -TimeoutSec 8 -UseBasicParsing; [int]$r.StatusCode } catch { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { [int]$_.Exception.Response.StatusCode.value__ } else { 0 } }"`) do set "PROBE_CODE=%%i"
-        if "%PROBE_CODE%"=="200" set "SANDBOX_READY=1"
-        if "%PROBE_CODE%"=="401" set "SANDBOX_READY=1"
-        if "%PROBE_CODE%"=="403" set "SANDBOX_READY=1"
-        if "%PROBE_CODE%"=="404" set "SANDBOX_READY=1"
-        if not "%SANDBOX_READY%"=="" goto :sandbox_ready
-        powershell -NoProfile -Command "Start-Sleep -Seconds 5" >nul
-    )
-    echo   Sandbox endpoint probe never became routable ^(last code: %PROBE_CODE%^).
+set "BROWSER_AUTH_CLIENT_ID="
+for /f "tokens=*" %%i in ('call azd env get-value BROWSER_AUTH_CLIENT_ID 2^>nul') do set "BROWSER_AUTH_CLIENT_ID=%%i"
+if "%BROWSER_AUTH_CLIENT_ID%"=="" (
+    echo   Sandbox browser auth is not provisioned yet.
+    echo   Run devclaw up in sandbox mode first so the preprovision hook can create the Entra OIDC app registration.
     exit /b 1
 )
-:sandbox_ready
+if not "%SANDBOX_EMAIL%"=="" echo   Ignoring sandbox email gate ^(%SANDBOX_EMAIL%^)^; browser auth now lives in-app and the platform port stays anonymous.
+set "BROWSER_AUTH_ALLOWED_USERS="
+for /f "tokens=*" %%i in ('call azd env get-value BROWSER_AUTH_ALLOWED_USERS 2^>nul') do set "BROWSER_AUTH_ALLOWED_USERS=%%i"
+if not "%BROWSER_AUTH_ALLOWED_USERS%"=="" echo   Browser allowlist: %BROWSER_AUTH_ALLOWED_USERS%
+set "RUNTIME_SCRIPT=%~dp0scripts\create-sandbox-runtime.py"
+if "%SANDBOX_DISK_ID%"=="" (
+    if "%SANDBOX_COPILOT_CRED_ID%"=="" (
+        call python "%RUNTIME_SCRIPT%" --group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --selector-label "app=openclaw" --selector-label "env=%SANDBOX_SQUAD%" --public-port 18789 --disk-name "%SANDBOX_DISK_NAME%"
+    ) else (
+        call python "%RUNTIME_SCRIPT%" --group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --selector-label "app=openclaw" --selector-label "env=%SANDBOX_SQUAD%" --public-port 18789 --disk-name "%SANDBOX_DISK_NAME%" --credential "%SANDBOX_COPILOT_CRED_ID%"
+    )
+) else (
+    if "%SANDBOX_COPILOT_CRED_ID%"=="" (
+        call python "%RUNTIME_SCRIPT%" --group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --selector-label "app=openclaw" --selector-label "env=%SANDBOX_SQUAD%" --public-port 18789 --disk-id "%SANDBOX_DISK_ID%"
+    ) else (
+        call python "%RUNTIME_SCRIPT%" --group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --selector-label "app=openclaw" --selector-label "env=%SANDBOX_SQUAD%" --public-port 18789 --disk-id "%SANDBOX_DISK_ID%" --credential "%SANDBOX_COPILOT_CRED_ID%"
+    )
+)
+if errorlevel 1 exit /b 1
 call aca sandbox get --group "sg-%SANDBOX_SQUAD%" -l app=openclaw,env=%SANDBOX_SQUAD% >nul 2>&1
 echo.
 exit /b 0
@@ -550,8 +576,8 @@ echo   devclaw sandbox
 echo.
 echo   Subcommands:
 echo     devclaw sandbox init ^<squad^> [region] [openai-region]   Create local Sandbox workspace
-echo     devclaw sandbox build ^<squad^> [region] [rg] [email] [image]
-echo     devclaw sandbox upload ^<squad^> [region] [rg] [email] [image]
+echo     devclaw sandbox build ^<squad^> [region] [rg] [image]
+echo     devclaw sandbox upload ^<squad^> [region] [rg] [image]
 echo     devclaw sandbox delete ^<squad^> [region] [rg]
 echo     devclaw sandbox status ^<squad^> [rg]
 echo.

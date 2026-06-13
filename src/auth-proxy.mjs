@@ -33,6 +33,16 @@ if (!UPSTREAM) {
 const upstream = new URL(UPSTREAM);
 const credential = new DefaultAzureCredential();
 const tokenProvider = getBearerTokenProvider(credential, SCOPE);
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 function ensureApiVersion(requestUrl) {
   if (!DEFAULT_API_VERSION) return requestUrl;
@@ -44,7 +54,87 @@ function ensureApiVersion(requestUrl) {
   return `${requestUrl}${sep}api-version=${encodeURIComponent(DEFAULT_API_VERSION)}`;
 }
 
+function sanitizeForwardHeaders(headers) {
+  const forwarded = {};
+  const connectionTokens = new Set();
+  const connectionHeader = headers.connection;
+  if (typeof connectionHeader === "string") {
+    for (const token of connectionHeader.split(",")) {
+      const normalized = token.trim().toLowerCase();
+      if (normalized) connectionTokens.add(normalized);
+    }
+  }
+
+  for (const [name, value] of Object.entries(headers)) {
+    const normalized = name.toLowerCase();
+    if (normalized === "host" || normalized === "content-length" || normalized === "api-key") {
+      continue;
+    }
+    if (HOP_BY_HOP_HEADERS.has(normalized) || connectionTokens.has(normalized)) {
+      continue;
+    }
+    forwarded[normalized] = value;
+  }
+  return forwarded;
+}
+
+async function readRequestBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function normalizeRequestBody(headers, requestUrl, body) {
+  if (!body.length) return body;
+  const contentEncoding = String(headers["content-encoding"] || "").trim().toLowerCase();
+  if (contentEncoding) return body;
+
+  const contentType = String(headers["content-type"] || "").trim().toLowerCase();
+  if (!contentType.startsWith("application/json")) return body;
+  if (!requestUrl || !requestUrl.includes("/chat/completions")) return body;
+
+  let payload;
+  try {
+    payload = JSON.parse(body.toString("utf8"));
+  } catch {
+    return body;
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return body;
+  }
+
+  const model = typeof payload.model === "string" ? payload.model : "";
+  if (!/^gpt-5([-.]|$)/i.test(model)) {
+    return body;
+  }
+  if (!Object.prototype.hasOwnProperty.call(payload, "max_tokens")) {
+    return body;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "max_completion_tokens")) {
+    return body;
+  }
+
+  const normalizedPayload = { ...payload, max_completion_tokens: payload.max_tokens };
+  delete normalizedPayload.max_tokens;
+  return Buffer.from(JSON.stringify(normalizedPayload));
+}
+
 const server = http.createServer(async (req, res) => {
+  const forwardPath = ensureApiVersion(req.url);
+  let requestBody;
+  try {
+    requestBody = await readRequestBody(req);
+    requestBody = normalizeRequestBody(req.headers, forwardPath, requestBody);
+  } catch (err) {
+    console.error("[auth-proxy] request read failed:", err.message);
+    res.writeHead(502, { "content-type": "text/plain" });
+    res.end("auth-proxy: request-read-failed");
+    return;
+  }
+
   let token;
   try {
     token = await tokenProvider();
@@ -55,13 +145,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const headers = { ...req.headers };
-  delete headers.host;
-  delete headers["api-key"];
+  const headers = sanitizeForwardHeaders(req.headers);
   headers.authorization = `Bearer ${token}`;
   headers.host = upstream.host;
-
-  const forwardPath = ensureApiVersion(req.url);
+  if (requestBody.length > 0) {
+    headers["content-length"] = String(requestBody.length);
+  }
 
   const upReq = httpsRequest(
     {
@@ -85,7 +174,10 @@ const server = http.createServer(async (req, res) => {
     res.end("auth-proxy: upstream-error");
   });
 
-  req.pipe(upReq);
+  if (requestBody.length > 0) {
+    upReq.write(requestBody);
+  }
+  upReq.end();
 });
 
 server.listen(PORT, "127.0.0.1", () => {

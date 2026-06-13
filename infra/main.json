@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "6317454443212054702"
+      "templateHash": "402916660816661491"
     }
   },
   "parameters": {
@@ -60,6 +60,13 @@
         "description": "Bot App Registration Secret (created by preprovision hook)"
       }
     },
+    "githubToken": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional GitHub token bridge for the standard ACA runtime. Set GITHUB_TOKEN in your azd env when you want hosted gh / token-backed GitHub MCP access outside ACA Sandbox."
+      }
+    },
     "botTenantId": {
       "type": "string",
       "defaultValue": "[subscription().tenantId]",
@@ -106,7 +113,7 @@
       "type": "string",
       "defaultValue": "false",
       "metadata": {
-        "description": "Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US). When ACA_SANDBOX_MODE=sandbox, Express mode is always enabled."
+        "description": "Opt into ACA Express mode (preview). Set USE_EXPRESS_ENV=true in your azd env. When ACA_SANDBOX_MODE=standard, Express mode enables fast cold-start on supported regions (e.g. East Asia, West Central US)."
       }
     },
     "skipStorage": {
@@ -154,7 +161,7 @@
   },
   "variables": {
     "normalizedSandboxMode": "[toLower(trim(parameters('acaSandboxMode')))]",
-    "expressEnabled": "[if(equals(variables('normalizedSandboxMode'), 'sandbox'), true(), if(equals(variables('normalizedSandboxMode'), 'standard'), equals(toLower(parameters('useExpressEnv')), 'true'), false()))]",
+    "expressEnabled": "[if(equals(variables('normalizedSandboxMode'), 'standard'), equals(toLower(parameters('useExpressEnv')), 'true'), false())]",
     "storageSkipped": "[equals(toLower(parameters('skipStorage')), 'true')]",
     "effectiveOpenaiLocation": "[if(empty(parameters('openaiLocation')), parameters('location'), parameters('openaiLocation'))]",
     "normalizedSquadName": "[toLower(replace(replace(replace(trim(parameters('squadName')), '_', '-'), ' ', '-'), '.', '-'))]",
@@ -3014,6 +3021,9 @@
           "botAppSecret": {
             "value": "[parameters('botAppSecret')]"
           },
+          "githubToken": {
+            "value": "[parameters('githubToken')]"
+          },
           "botTenantId": {
             "value": "[parameters('botTenantId')]"
           },
@@ -3058,7 +3068,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "2840977900217840789"
+              "templateHash": "16515850885542984236"
             }
           },
           "parameters": {
@@ -3108,6 +3118,13 @@
               "defaultValue": "",
               "metadata": {
                 "description": "Bot App Registration Secret"
+              }
+            },
+            "githubToken": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional GitHub token bridge for the standard ACA runtime."
               }
             },
             "botTenantId": {
@@ -3202,7 +3219,8 @@
             "sandboxDiskConfigured": "[or(not(empty(parameters('sandboxDiskSnapshotId'))), not(empty(parameters('sandboxDiskName'))))]",
             "storageEnabled": "[and(and(not(variables('sandboxModeEnabled')), not(parameters('useExpressEnv'))), not(parameters('skipStorage')))]",
             "teamsSecrets": "[if(variables('teamsEnabled'), createArray(createObject('name', 'msteams-app-password', 'value', parameters('botAppSecret'))), createArray())]",
-            "containerSecrets": "[variables('teamsSecrets')]",
+            "githubSecrets": "[if(not(empty(parameters('githubToken'))), createArray(createObject('name', 'github-token', 'value', parameters('githubToken'))), createArray())]",
+            "containerSecrets": "[concat(variables('teamsSecrets'), variables('githubSecrets'))]",
             "baseEnv": [
               {
                 "name": "OPENAI_BASE_URL",
@@ -3238,7 +3256,8 @@
               }
             ],
             "teamsEnv": "[if(variables('teamsEnabled'), createArray(createObject('name', 'MSTEAMS_APP_ID', 'value', parameters('botAppId')), createObject('name', 'MSTEAMS_APP_PASSWORD', 'secretRef', 'msteams-app-password'), createObject('name', 'MSTEAMS_TENANT_ID', 'value', parameters('botTenantId'))), createArray())]",
-            "containerEnv": "[concat(variables('baseEnv'), variables('teamsEnv'))]",
+            "githubEnv": "[if(not(empty(parameters('githubToken'))), createArray(createObject('name', 'GITHUB_TOKEN', 'secretRef', 'github-token'), createObject('name', 'GH_TOKEN', 'secretRef', 'github-token'), createObject('name', 'GH_PROMPT_DISABLED', 'value', '1')), createArray())]",
+            "containerEnv": "[concat(variables('baseEnv'), variables('teamsEnv'), variables('githubEnv'))]",
             "placeholderImage": "mcr.microsoft.com/k8se/quickstart:latest",
             "isPlaceholder": "[empty(parameters('containerImage'))]",
             "effectiveImage": "[if(variables('isPlaceholder'), variables('placeholderImage'), parameters('containerImage'))]",
@@ -3342,6 +3361,7 @@
               }
             },
             {
+              "condition": "[not(variables('sandboxModeEnabled'))]",
               "type": "Microsoft.App/managedEnvironments",
               "apiVersion": "2026-03-02-preview",
               "name": "[format('env-{0}', parameters('resourceToken'))]",
@@ -3376,6 +3396,7 @@
               ]
             },
             {
+              "condition": "[not(variables('sandboxModeEnabled'))]",
               "type": "Microsoft.App/containerApps",
               "apiVersion": "2024-03-01",
               "name": "[format('openclaw-{0}', parameters('resourceToken'))]",
@@ -3438,7 +3459,7 @@
               ]
             },
             {
-              "condition": "[not(empty(parameters('easyAuthAppId')))]",
+              "condition": "[and(not(variables('sandboxModeEnabled')), not(empty(parameters('easyAuthAppId'))))]",
               "type": "Microsoft.App/containerApps/authConfigs",
               "apiVersion": "2024-03-01",
               "name": "[format('{0}/{1}', format('openclaw-{0}', parameters('resourceToken')), 'current')]",
@@ -3471,6 +3492,7 @@
               ]
             },
             {
+              "condition": "[not(variables('sandboxModeEnabled'))]",
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.CognitiveServices/accounts', last(split(parameters('openaiResourceId'), '/')))]",
@@ -3485,7 +3507,22 @@
               ]
             },
             {
-              "condition": "[not(empty(parameters('botAppId')))]",
+              "condition": "[not(variables('sandboxModeEnabled'))]",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.CognitiveServices/accounts', last(split(parameters('openaiResourceId'), '/')))]",
+              "name": "[guid(subscription().id, resourceId('Microsoft.App/containerApps', format('openclaw-{0}', parameters('resourceToken'))), '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.App/containerApps', format('openclaw-{0}', parameters('resourceToken'))), '2024-03-01', 'full').identity.principalId]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/containerApps', format('openclaw-{0}', parameters('resourceToken')))]"
+              ]
+            },
+            {
+              "condition": "[and(not(variables('sandboxModeEnabled')), not(empty(parameters('botAppId'))))]",
               "type": "Microsoft.BotService/botServices",
               "apiVersion": "2022-09-15",
               "name": "[format('bot-{0}', parameters('resourceToken'))]",
@@ -3512,7 +3549,7 @@
               ]
             },
             {
-              "condition": "[not(empty(parameters('botAppId')))]",
+              "condition": "[and(not(variables('sandboxModeEnabled')), not(empty(parameters('botAppId'))))]",
               "type": "Microsoft.BotService/botServices/channels",
               "apiVersion": "2022-09-15",
               "name": "[format('{0}/{1}', format('bot-{0}', parameters('resourceToken')), 'MsTeamsChannel')]",
@@ -3539,11 +3576,11 @@
             },
             "HOST_FQDN": {
               "type": "string",
-              "value": "[reference(resourceId('Microsoft.App/containerApps', format('openclaw-{0}', parameters('resourceToken'))), '2024-03-01').configuration.ingress.fqdn]"
+              "value": "[if(variables('sandboxModeEnabled'), '', reference(resourceId('Microsoft.App/containerApps', format('openclaw-{0}', parameters('resourceToken'))), '2024-03-01').configuration.ingress.fqdn)]"
             },
             "HOST_NAME": {
               "type": "string",
-              "value": "[format('openclaw-{0}', parameters('resourceToken'))]"
+              "value": "[if(variables('sandboxModeEnabled'), '', format('openclaw-{0}', parameters('resourceToken')))]"
             },
             "ACA_SANDBOX_MODE": {
               "type": "string",

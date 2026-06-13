@@ -133,44 +133,132 @@ if ($botAppId) {
 Start-Sleep -Seconds 3
 
 # ---------------------------------------------------------------------------
-# 2. Easy Auth — Entra ID app registration for ACA built-in authentication
-#    Forces Microsoft login before any request reaches the container
+# 2. Browser auth (Sandbox) vs. Easy Auth (standard ACA legacy)
 # ---------------------------------------------------------------------------
-$easyAuthAppId = Get-AzdValue "EASYAUTH_APP_ID"
-if ($easyAuthAppId) {
-    Write-Host "[preprovision] Easy Auth app registration already exists: $easyAuthAppId"
-} else {
-    $authAppName = "openclaw-auth-$envName"
-    Write-Host "[preprovision] Creating Easy Auth app registration: $authAppName"
+$hostMode = (Get-AzdFlag "ACA_SANDBOX_MODE").ToLowerInvariant()
+if (-not $hostMode) { $hostMode = "sandbox" }
 
-    $authOutput = az ad app create --display-name $authAppName --sign-in-audience "AzureADMyOrg" `
-        --web-redirect-uris "https://placeholder.azurecontainerapps.io/.auth/login/aad/callback" `
-        --enable-id-token-issuance true `
-        @smrArgs `
-        --query appId -o tsv 2>&1
-    $easyAuthAppId = $authOutput | Where-Object { $_ -match '^[0-9a-f-]{36}$' } | Select-Object -First 1
-    if (-not $easyAuthAppId) {
-        Write-Host "[preprovision] Retrying Easy Auth app creation after 5s..."
-        Start-Sleep -Seconds 5
+if ($hostMode -eq "sandbox") {
+    $browserAuthAppId = Get-AzdValue "BROWSER_AUTH_CLIENT_ID"
+    $browserAuthSessionSecret = Get-AzdFlag "BROWSER_AUTH_SESSION_SECRET"
+    $browserAuthAllowedUsers = Get-AzdFlag "BROWSER_AUTH_ALLOWED_USERS"
+    $browserAuthAllowedObjectIds = Get-AzdFlag "BROWSER_AUTH_ALLOWED_OBJECT_IDS"
+    $tenantId = az account show --query tenantId -o tsv 2>$null
+    $currentUser = az account show --query user.name -o tsv 2>$null
+
+    if ($browserAuthAppId) {
+        Write-Host "[preprovision] Sandbox browser auth app registration already exists: $browserAuthAppId"
+    } else {
+        $browserAuthAppName = "openclaw-browser-$envName"
+        Write-Host "[preprovision] Creating sandbox browser auth app registration: $browserAuthAppName"
+
+        $browserAuthOutput = az ad app create --display-name $browserAuthAppName --sign-in-audience "AzureADMyOrg" `
+            --web-redirect-uris "https://placeholder.adcproxy.io/oidc/callback" `
+            --enable-id-token-issuance true `
+            @smrArgs `
+            --query appId -o tsv 2>&1
+        $browserAuthAppId = $browserAuthOutput | Where-Object { $_ -match '^[0-9a-f-]{36}$' } | Select-Object -First 1
+        if (-not $browserAuthAppId) {
+            Write-Host "[preprovision] ERROR: Failed to create sandbox browser auth app registration"
+            if ("$browserAuthOutput" -match "(?i)serviceManagementReference") {
+                Write-Host "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
+                Write-Host "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
+                Write-Host "[preprovision]          (get the GUID from your tenant admin)"
+            } else {
+                Write-Host "[preprovision]   Output: $browserAuthOutput"
+            }
+            exit 1
+        }
+
+        az ad sp create --id $browserAuthAppId 2>$null | Out-Null
+        azd env set BROWSER_AUTH_CLIENT_ID $browserAuthAppId
+        Write-Host "[preprovision] Sandbox browser auth app created: $browserAuthAppId"
+    }
+
+    if ($tenantId) {
+        azd env set BROWSER_AUTH_TENANT_ID $tenantId
+    }
+
+    if (-not $browserAuthAllowedUsers -and $currentUser) {
+        azd env set BROWSER_AUTH_ALLOWED_USERS $currentUser
+        $browserAuthAllowedUsers = $currentUser
+        Write-Host "[preprovision] Defaulted sandbox browser auth allowlist to current deployer: $currentUser"
+    } elseif ($browserAuthAllowedUsers) {
+        Write-Host "[preprovision] Sandbox browser auth allowlist already present in azd env"
+    }
+
+    if (-not $browserAuthAllowedObjectIds) {
+        $currentUserObjectId = az ad signed-in-user show --query id -o tsv 2>$null
+        if ($currentUserObjectId -and $currentUserObjectId -match '^[0-9a-f-]{36}$') {
+            azd env set BROWSER_AUTH_ALLOWED_OBJECT_IDS $currentUserObjectId
+            $browserAuthAllowedObjectIds = $currentUserObjectId
+            Write-Host "[preprovision] Cached current deployer object ID for sandbox browser auth allowlist"
+        } else {
+            Write-Host "[preprovision] Could not resolve signed-in user object ID automatically; user/UPN allowlist will still apply"
+        }
+    } else {
+        Write-Host "[preprovision] Sandbox browser auth object-ID allowlist already present in azd env"
+    }
+
+    if (-not $browserAuthAllowedUsers -and -not $browserAuthAllowedObjectIds) {
+        Write-Host "[preprovision] ERROR: Could not determine a default sandbox browser auth allowlist."
+        Write-Host "[preprovision]   Fix: azd env set BROWSER_AUTH_ALLOWED_USERS <user@tenant>"
+        exit 1
+    }
+
+    if (-not $browserAuthSessionSecret) {
+        $bytes = New-Object byte[] 32
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        $browserAuthSessionSecret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        azd env set BROWSER_AUTH_SESSION_SECRET $browserAuthSessionSecret
+        Write-Host "[preprovision] Generated sandbox browser auth session secret"
+    } else {
+        Write-Host "[preprovision] Sandbox browser auth session secret already present in azd env"
+    }
+
+    azd env set BROWSER_AUTH_MODE entra-oidc-proxy
+    Write-Host "[preprovision] Sandbox browser auth is configured (redirect URI updated during 'devclaw sandbox build')."
+} else {
+    # -----------------------------------------------------------------------
+    # Easy Auth — Entra ID app registration for ACA built-in authentication
+    # Legacy standard Container Apps path only.
+    # -----------------------------------------------------------------------
+    $easyAuthAppId = Get-AzdValue "EASYAUTH_APP_ID"
+    if ($easyAuthAppId) {
+        Write-Host "[preprovision] Easy Auth app registration already exists: $easyAuthAppId"
+    } else {
+        $authAppName = "openclaw-auth-$envName"
+        Write-Host "[preprovision] Creating Easy Auth app registration: $authAppName"
+
         $authOutput = az ad app create --display-name $authAppName --sign-in-audience "AzureADMyOrg" `
             --web-redirect-uris "https://placeholder.azurecontainerapps.io/.auth/login/aad/callback" `
             --enable-id-token-issuance true `
             @smrArgs `
             --query appId -o tsv 2>&1
         $easyAuthAppId = $authOutput | Where-Object { $_ -match '^[0-9a-f-]{36}$' } | Select-Object -First 1
-    }
-    if (-not $easyAuthAppId) {
-        Write-Host "[preprovision] ERROR: Failed to create Easy Auth app registration"
-        if ("$authOutput" -match "(?i)serviceManagementReference") {
-            Write-Host "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
-            Write-Host "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
-            Write-Host "[preprovision]          (get the GUID from your tenant admin)"
-        } else {
-            Write-Host "[preprovision]   Output: $authOutput"
+        if (-not $easyAuthAppId) {
+            Write-Host "[preprovision] Retrying Easy Auth app creation after 5s..."
+            Start-Sleep -Seconds 5
+            $authOutput = az ad app create --display-name $authAppName --sign-in-audience "AzureADMyOrg" `
+                --web-redirect-uris "https://placeholder.azurecontainerapps.io/.auth/login/aad/callback" `
+                --enable-id-token-issuance true `
+                @smrArgs `
+                --query appId -o tsv 2>&1
+            $easyAuthAppId = $authOutput | Where-Object { $_ -match '^[0-9a-f-]{36}$' } | Select-Object -First 1
         }
-        exit 1
-    }
+        if (-not $easyAuthAppId) {
+            Write-Host "[preprovision] ERROR: Failed to create Easy Auth app registration"
+            if ("$authOutput" -match "(?i)serviceManagementReference") {
+                Write-Host "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
+                Write-Host "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
+                Write-Host "[preprovision]          (get the GUID from your tenant admin)"
+            } else {
+                Write-Host "[preprovision]   Output: $authOutput"
+            }
+            exit 1
+        }
 
-    azd env set EASYAUTH_APP_ID $easyAuthAppId
-    Write-Host "[preprovision] Easy Auth app created: $easyAuthAppId"
+        azd env set EASYAUTH_APP_ID $easyAuthAppId
+        Write-Host "[preprovision] Easy Auth app created: $easyAuthAppId"
+    }
 }

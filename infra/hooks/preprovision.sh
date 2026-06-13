@@ -126,38 +126,130 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Easy Auth — Entra ID app registration for ACA built-in authentication
-# Forces Microsoft login before any request reaches the container
+# Browser auth (Sandbox) vs. Easy Auth (standard ACA legacy)
 # ---------------------------------------------------------------------------
-EXISTING_AUTH_ID=$(azd env get-value EASYAUTH_APP_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
-if [ -n "$EXISTING_AUTH_ID" ]; then
-    echo "[preprovision] Easy Auth app registration already exists: $EXISTING_AUTH_ID"
-else
-    AUTH_APP_NAME="openclaw-auth-${ENV_NAME}"
-    echo "[preprovision] Creating Easy Auth app registration: $AUTH_APP_NAME"
+HOST_MODE="$(azd_flag ACA_SANDBOX_MODE)"
+HOST_MODE="${HOST_MODE,,}"
+if [ -z "$HOST_MODE" ]; then
+    HOST_MODE="sandbox"
+fi
 
-    # Create with placeholder redirect URI (updated after Bicep creates the container app)
-    AUTH_OUTPUT=$(az ad app create \
-        --display-name "$AUTH_APP_NAME" \
-        --sign-in-audience "AzureADMyOrg" \
-        --web-redirect-uris "https://placeholder.azurecontainerapps.io/.auth/login/aad/callback" \
-        --enable-id-token-issuance true \
-        ${SMR_ARGS[@]+"${SMR_ARGS[@]}"} \
-        --query appId -o tsv 2>&1)
-    AUTH_APP_ID=$(echo "$AUTH_OUTPUT" | grep -oP '^[0-9a-f-]{36}$' | head -1)
+if [ "$HOST_MODE" = "sandbox" ]; then
+    BROWSER_AUTH_ID=$(azd env get-value BROWSER_AUTH_CLIENT_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
+    BROWSER_AUTH_SESSION_SECRET="$(azd_flag BROWSER_AUTH_SESSION_SECRET)"
+    BROWSER_AUTH_ALLOWED_USERS="$(azd_flag BROWSER_AUTH_ALLOWED_USERS)"
+    BROWSER_AUTH_ALLOWED_OBJECT_IDS="$(azd_flag BROWSER_AUTH_ALLOWED_OBJECT_IDS)"
+    TENANT_ID=$(az account show --query tenantId -o tsv 2>/dev/null)
+    CURRENT_USER="$(az account show --query user.name -o tsv 2>/dev/null || echo "")"
 
-    if [ -z "$AUTH_APP_ID" ]; then
-        echo "[preprovision] ERROR: Failed to create Easy Auth app registration"
-        if echo "$AUTH_OUTPUT" | grep -qi "serviceManagementReference"; then
-            echo "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
-            echo "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
-            echo "[preprovision]          (get the GUID from your tenant admin)"
-        else
-            echo "[preprovision]   Output: $AUTH_OUTPUT"
+    if [ -n "$BROWSER_AUTH_ID" ]; then
+        echo "[preprovision] Sandbox browser auth app registration already exists: $BROWSER_AUTH_ID"
+    else
+        BROWSER_AUTH_APP_NAME="openclaw-browser-${ENV_NAME}"
+        echo "[preprovision] Creating sandbox browser auth app registration: $BROWSER_AUTH_APP_NAME"
+
+        BROWSER_AUTH_OUTPUT=$(az ad app create \
+            --display-name "$BROWSER_AUTH_APP_NAME" \
+            --sign-in-audience "AzureADMyOrg" \
+            --web-redirect-uris "https://placeholder.adcproxy.io/oidc/callback" \
+            --enable-id-token-issuance true \
+            ${SMR_ARGS[@]+"${SMR_ARGS[@]}"} \
+            --query appId -o tsv 2>&1)
+        BROWSER_AUTH_ID=$(echo "$BROWSER_AUTH_OUTPUT" | grep -oP '^[0-9a-f-]{36}$' | head -1)
+
+        if [ -z "$BROWSER_AUTH_ID" ]; then
+            echo "[preprovision] ERROR: Failed to create sandbox browser auth app registration"
+            if echo "$BROWSER_AUTH_OUTPUT" | grep -qi "serviceManagementReference"; then
+                echo "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
+                echo "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
+                echo "[preprovision]          (get the GUID from your tenant admin)"
+            else
+                echo "[preprovision]   Output: $BROWSER_AUTH_OUTPUT"
+            fi
+            exit 1
         fi
+
+        az ad sp create --id "$BROWSER_AUTH_ID" >/dev/null 2>&1 || true
+        azd env set BROWSER_AUTH_CLIENT_ID "$BROWSER_AUTH_ID"
+        echo "[preprovision] Sandbox browser auth app ID: $BROWSER_AUTH_ID"
+    fi
+
+    if [ -n "$TENANT_ID" ]; then
+        azd env set BROWSER_AUTH_TENANT_ID "$TENANT_ID"
+    fi
+
+    if [ -z "$BROWSER_AUTH_ALLOWED_USERS" ] && [ -n "$CURRENT_USER" ]; then
+        azd env set BROWSER_AUTH_ALLOWED_USERS "$CURRENT_USER"
+        BROWSER_AUTH_ALLOWED_USERS="$CURRENT_USER"
+        echo "[preprovision] Defaulted sandbox browser auth allowlist to current deployer: $CURRENT_USER"
+    elif [ -n "$BROWSER_AUTH_ALLOWED_USERS" ]; then
+        echo "[preprovision] Sandbox browser auth allowlist already present in azd env"
+    fi
+
+    if [ -z "$BROWSER_AUTH_ALLOWED_OBJECT_IDS" ]; then
+        CURRENT_USER_OBJECT_ID="$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")"
+        if echo "$CURRENT_USER_OBJECT_ID" | grep -qiE '^[0-9a-f-]{36}$'; then
+            azd env set BROWSER_AUTH_ALLOWED_OBJECT_IDS "$CURRENT_USER_OBJECT_ID"
+            BROWSER_AUTH_ALLOWED_OBJECT_IDS="$CURRENT_USER_OBJECT_ID"
+            echo "[preprovision] Cached current deployer object ID for sandbox browser auth allowlist"
+        else
+            echo "[preprovision] Could not resolve signed-in user object ID automatically; user/UPN allowlist will still apply"
+        fi
+    else
+        echo "[preprovision] Sandbox browser auth object-ID allowlist already present in azd env"
+    fi
+
+    if [ -z "$BROWSER_AUTH_ALLOWED_USERS" ] && [ -z "$BROWSER_AUTH_ALLOWED_OBJECT_IDS" ]; then
+        echo "[preprovision] ERROR: Could not determine a default sandbox browser auth allowlist."
+        echo "[preprovision]   Fix: azd env set BROWSER_AUTH_ALLOWED_USERS <user@tenant>"
         exit 1
     fi
 
-    azd env set EASYAUTH_APP_ID "$AUTH_APP_ID"
-    echo "[preprovision] Easy Auth app ID: $AUTH_APP_ID"
+    if [ -z "$BROWSER_AUTH_SESSION_SECRET" ]; then
+        BROWSER_AUTH_SESSION_SECRET="$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+        azd env set BROWSER_AUTH_SESSION_SECRET "$BROWSER_AUTH_SESSION_SECRET"
+        echo "[preprovision] Generated sandbox browser auth session secret"
+    else
+        echo "[preprovision] Sandbox browser auth session secret already present in azd env"
+    fi
+
+    azd env set BROWSER_AUTH_MODE "entra-oidc-proxy"
+    echo "[preprovision] Sandbox browser auth is configured (redirect URI updated during 'devclaw sandbox build')."
+else
+    # -----------------------------------------------------------------------
+    # Easy Auth — Entra ID app registration for ACA built-in authentication
+    # Legacy standard Container Apps path only.
+    # -----------------------------------------------------------------------
+    EXISTING_AUTH_ID=$(azd env get-value EASYAUTH_APP_ID 2>/dev/null | grep -oP '^[0-9a-f-]+$' || echo "")
+    if [ -n "$EXISTING_AUTH_ID" ]; then
+        echo "[preprovision] Easy Auth app registration already exists: $EXISTING_AUTH_ID"
+    else
+        AUTH_APP_NAME="openclaw-auth-${ENV_NAME}"
+        echo "[preprovision] Creating Easy Auth app registration: $AUTH_APP_NAME"
+
+        # Create with placeholder redirect URI (updated after Bicep creates the container app)
+        AUTH_OUTPUT=$(az ad app create \
+            --display-name "$AUTH_APP_NAME" \
+            --sign-in-audience "AzureADMyOrg" \
+            --web-redirect-uris "https://placeholder.azurecontainerapps.io/.auth/login/aad/callback" \
+            --enable-id-token-issuance true \
+            ${SMR_ARGS[@]+"${SMR_ARGS[@]}"} \
+            --query appId -o tsv 2>&1)
+        AUTH_APP_ID=$(echo "$AUTH_OUTPUT" | grep -oP '^[0-9a-f-]{36}$' | head -1)
+
+        if [ -z "$AUTH_APP_ID" ]; then
+            echo "[preprovision] ERROR: Failed to create Easy Auth app registration"
+            if echo "$AUTH_OUTPUT" | grep -qi "serviceManagementReference"; then
+                echo "[preprovision]   Cause: Your tenant requires a serviceManagementReference on app registrations."
+                echo "[preprovision]   Fix:   azd env set SERVICE_MANAGEMENT_REFERENCE <guid>"
+                echo "[preprovision]          (get the GUID from your tenant admin)"
+            else
+                echo "[preprovision]   Output: $AUTH_OUTPUT"
+            fi
+            exit 1
+        fi
+
+        azd env set EASYAUTH_APP_ID "$AUTH_APP_ID"
+        echo "[preprovision] Easy Auth app ID: $AUTH_APP_ID"
+    fi
 fi

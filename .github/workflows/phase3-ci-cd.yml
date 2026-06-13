@@ -149,12 +149,21 @@ jobs:
             acr_name="${acr_login_server%%.*}"
             sandbox_image="${acr_login_server}/${SANDBOX_IMAGE_REPOSITORY}:ci-${{ github.run_id }}"
 
+            node ./scripts/generate-squad-runtime-bundle.mjs \
+              --repo-root "$GITHUB_WORKSPACE" \
+              --git-commit "${{ github.sha }}" \
+              --git-short-commit "${GITHUB_SHA::7}" \
+              --git-dirty false
+
             az acr build \
               --registry "$acr_name" \
               --platform linux/amd64 \
               --file "./src/Dockerfile.sandbox" \
               --image "$sandbox_image" \
-              "./src"
+              --build-arg "SQUAD_RUNTIME_GIT_COMMIT=${{ github.sha }}" \
+              --build-arg "SQUAD_RUNTIME_GIT_SHORT_COMMIT=${GITHUB_SHA::7}" \
+              --build-arg "SQUAD_RUNTIME_GIT_DIRTY=false" \
+              "."
 
             python3 ./scripts/register-sandbox-disk.py \
               --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}" \

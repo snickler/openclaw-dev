@@ -1,8 +1,53 @@
 #!/bin/bash
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:${PATH:-}"
+
 echo "[openclaw] Starting..."
 echo "[openclaw] OpenClaw version: $(openclaw --version 2>&1)"
 echo "[openclaw] Auth mode: ${AZURE_OPENAI_AUTH:-api-key}"
 echo "[openclaw] OPENAI_BASE_URL: ${OPENAI_BASE_URL}"
+if [ -n "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="${GH_TOKEN}"
+fi
+if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN="${GITHUB_TOKEN}"
+fi
+export GIT_TERMINAL_PROMPT=0
+export GH_PROMPT_DISABLED="${GH_PROMPT_DISABLED:-1}"
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-/root/.config/gh}"
+mkdir -p "$GH_CONFIG_DIR"
+if [ -n "${GH_TOKEN:-}" ]; then
+    GH_HOSTS_FILE="$GH_CONFIG_DIR/hosts.yml"
+    if [ ! -s "$GH_HOSTS_FILE" ] || ! grep -q '^github.com:' "$GH_HOSTS_FILE" 2>/dev/null; then
+        umask 077
+        cat > "$GH_HOSTS_FILE" <<EOF
+github.com:
+    git_protocol: https
+    oauth_token: ${GH_TOKEN}
+EOF
+        echo "[openclaw] GitHub token bridge written to GH_CONFIG_DIR/hosts.yml for non-interactive gh auth"
+    fi
+fi
+echo "[openclaw] PATH: ${PATH}"
+for bin in gh git jq; do
+    if command -v "$bin" >/dev/null 2>&1; then
+        echo "[openclaw] $bin available at: $(command -v "$bin")"
+    else
+        echo "[openclaw] WARNING: required hosted GitHub helper missing from PATH: $bin"
+    fi
+done
+OPENCLAW_CONFIG_EVAL="$(find /usr/local/lib/node_modules/openclaw/dist -maxdepth 1 -name 'config-eval-*.js' | head -n 1 || true)"
+if [ -n "${OPENCLAW_CONFIG_EVAL:-}" ]; then
+    node --input-type=module -e "import { pathToFileURL } from 'node:url'; const mod = await import(pathToFileURL(process.argv[1]).href); const hasBinary = mod.n ?? mod.hasBinary; if (typeof hasBinary !== 'function') { console.log('[openclaw] WARNING: OpenClaw hasBinary export not found'); process.exit(0); } console.log('[openclaw] OpenClaw hasBinary(gh): ' + String(hasBinary('gh'))); console.log('[openclaw] OpenClaw hasBinary(git): ' + String(hasBinary('git'))); console.log('[openclaw] OpenClaw hasBinary(jq): ' + String(hasBinary('jq')));" "${OPENCLAW_CONFIG_EVAL}" || echo "[openclaw] WARNING: OpenClaw hasBinary self-check failed"
+fi
+if command -v gh >/dev/null 2>&1; then
+    echo "[openclaw] gh version: $(gh --version 2>/dev/null | head -n 1)"
+    if [ -n "${GH_TOKEN:-}" ]; then
+        echo "[openclaw] GitHub token bridge detected — configuring gh/git credential helper"
+        gh auth setup-git >/proc/1/fd/1 2>/proc/1/fd/2 || echo "[openclaw] WARNING: gh auth setup-git failed"
+    else
+        echo "[openclaw] GitHub token bridge not configured"
+    fi
+fi
 
 # When SKIP_STORAGE=true (Azure Policy blocks shared-key access on storage),
 # /mnt/state is not mounted. Fall back to an in-container ephemeral path so
@@ -40,32 +85,111 @@ if [ -z "${MSTEAMS_APP_ID:-}" ]; then
     node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));if(c.channels&&c.channels.msteams){c.channels.msteams.enabled=false;}if(c.plugins){c.plugins.allow=(c.plugins.allow||[]).filter(x=>x!=='msteams');if(c.plugins.entries&&c.plugins.entries.msteams){c.plugins.entries.msteams.enabled=false;}}fs.writeFileSync(p,JSON.stringify(c,null,2));"
 fi
 
-# Gateway token for auth (used by both --token flag and SPA auto-connect).
-# Persist across container restarts via /mnt/state so the Control UI in the
-# browser doesn't drift out of sync after every deploy. Precedence:
-#   1. OPENCLAW_GATEWAY_TOKEN env var (if set)
-#   2. Existing token on persistent volume
-#   3. Generate fresh and persist
-TOKEN_FILE="/mnt/state/gateway-token"
-if [ -n "${OPENCLAW_GATEWAY_TOKEN}" ]; then
-    GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}"
-    echo "[openclaw] Using gateway token from env"
-elif [ -s "$TOKEN_FILE" ]; then
-    GATEWAY_TOKEN="$(cat "$TOKEN_FILE")"
-    echo "[openclaw] Loaded persisted gateway token"
-else
-    GATEWAY_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
-    mkdir -p "$(dirname "$TOKEN_FILE")"
-    printf '%s' "$GATEWAY_TOKEN" > "$TOKEN_FILE"
-    echo "[openclaw] Generated and persisted new gateway token"
-fi
-
-# Inject token into URL hash BEFORE any SPA scripts load
-# The SPA reads #token=<value>, saves it to settings, and auto-connects
 CONTROL_UI="/usr/local/lib/node_modules/openclaw/dist/control-ui/index.html"
 if [ -f "$CONTROL_UI" ]; then
-    sed -i "0,/<script>/s//<script>if(!location.hash.includes('token=')){location.hash='token=${GATEWAY_TOKEN}';}<\/script><script>/" "$CONTROL_UI"
-    echo "[openclaw] Injected auto-connect token into control UI HTML"
+    node -e "const fs=require('fs');const p=process.argv[1];let s=fs.readFileSync(p,'utf8');s=s.replace(/<script>if\\(!location\\.hash\\.includes\\('token='\\)\\)\\{location\\.hash='token=[^']*';\\}<\\/script>/g,'');fs.writeFileSync(p,s);" "$CONTROL_UI"
+fi
+
+if [ -f /opt/openclaw-auth/seed-squad-runtime.mjs ] && [ -d /opt/openclaw-squad ]; then
+    echo "[openclaw] Seeding Squad runtime workspaces and agent roster"
+    node /opt/openclaw-auth/seed-squad-runtime.mjs \
+        --state-root /root/.openclaw \
+        --config /root/.openclaw/openclaw.json \
+        --seed-dir /opt/openclaw-squad \
+        --control-ui "$CONTROL_UI"
+fi
+
+if command -v gh >/dev/null 2>&1; then
+    echo "[openclaw] Built-in /skills github prerequisite satisfied: $(command -v gh)"
+    if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+        echo "[openclaw] GitHub bridge: gh installed with token env available for hosted GitHub flows"
+    else
+        echo "[openclaw] GitHub bridge: gh installed but no GH_TOKEN/GITHUB_TOKEN detected (built-in github skill can read public data only unless a token bridge is provisioned)"
+    fi
+else
+    echo "[openclaw] GitHub bridge: gh not installed in this image (built-in /skills github skill will be blocked)"
+fi
+
+BROWSER_AUTH_ENABLED=false
+if [ "${BROWSER_AUTH_MODE:-}" = "entra-oidc-proxy" ] || [ -n "${BROWSER_AUTH_CLIENT_ID:-}" ] || [ -n "${BROWSER_AUTH_TENANT_ID:-}" ] || [ -n "${BROWSER_AUTH_SESSION_SECRET:-}" ]; then
+    BROWSER_AUTH_ENABLED=true
+fi
+
+if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
+    export BROWSER_AUTH_MODE="entra-oidc-proxy"
+    PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-18789}"
+    if [ -z "${PUBLIC_BASE_URL:-}" ] && [ -n "${ADC_SANDBOX_ID:-}" ] && [ -n "${SANDBOX_REGION:-}" ]; then
+        export PUBLIC_BASE_URL="https://${ADC_SANDBOX_ID}--${PUBLIC_PORT}.${SANDBOX_REGION}.adcproxy.io"
+        echo "[openclaw] Derived PUBLIC_BASE_URL from sandbox metadata: ${PUBLIC_BASE_URL}"
+    fi
+    if [ -z "${PUBLIC_BASE_URL:-}" ] || [ -z "${BROWSER_AUTH_CLIENT_ID:-}" ] || [ -z "${BROWSER_AUTH_TENANT_ID:-}" ] || [ -z "${BROWSER_AUTH_SESSION_SECRET:-}" ]; then
+        echo "[openclaw] ERROR: Browser OIDC auth is enabled but required settings are missing."
+        echo "[openclaw] Required: PUBLIC_BASE_URL, BROWSER_AUTH_CLIENT_ID, BROWSER_AUTH_TENANT_ID, BROWSER_AUTH_SESSION_SECRET"
+        exit 1
+    fi
+    if [ -z "${BROWSER_AUTH_ALLOWED_USERS:-}" ] && [ -z "${BROWSER_AUTH_ALLOWED_OBJECT_IDS:-}" ] && [ -z "${BROWSER_AUTH_ALLOWED_PRINCIPALS:-}" ]; then
+        echo "[openclaw] ERROR: Browser OIDC auth requires an allowlist."
+        echo "[openclaw] Required: BROWSER_AUTH_ALLOWED_USERS and/or BROWSER_AUTH_ALLOWED_OBJECT_IDS"
+        exit 1
+    fi
+    if ! PUBLIC_BASE_ORIGIN="$(node -e "const u=new URL(process.argv[1]);if(u.protocol!=='https:'){process.exit(2)}console.log(u.origin)" "$PUBLIC_BASE_URL" 2>/dev/null)"; then
+        echo "[openclaw] ERROR: PUBLIC_BASE_URL must be a valid https URL"
+        exit 1
+    fi
+    export PUBLIC_BASE_ORIGIN
+    export BROWSER_AUTH_ISSUER="https://login.microsoftonline.com/${BROWSER_AUTH_TENANT_ID}/v2.0"
+    export BROWSER_AUTH_AUTHORIZATION_ENDPOINT="https://login.microsoftonline.com/${BROWSER_AUTH_TENANT_ID}/oauth2/v2.0/authorize"
+    export BROWSER_AUTH_JWKS_URI="https://login.microsoftonline.com/${BROWSER_AUTH_TENANT_ID}/discovery/v2.0/keys"
+    BROWSER_AUTH_JWKS_CACHE_PATH="/root/.openclaw/browser-oidc-jwks.json"
+    BROWSER_AUTH_JWKS_PREFETCH_OK=false
+    for attempt in 1 2 3; do
+        if node -e "const fs=require('fs');const out=process.argv[1];(async()=>{const response=await fetch(process.env.BROWSER_AUTH_JWKS_URI,{headers:{Accept:'application/json'}});if(!response.ok){throw new Error('jwks fetch failed ('+response.status+')');}const jwks=await response.json();fs.writeFileSync(out,JSON.stringify(jwks));})().catch(err=>{console.error(err?.message||err);process.exit(1)});" "$BROWSER_AUTH_JWKS_CACHE_PATH"; then
+            export BROWSER_AUTH_JWKS_PATH="$BROWSER_AUTH_JWKS_CACHE_PATH"
+            BROWSER_AUTH_JWKS_PREFETCH_OK=true
+            echo "[openclaw] Prefetched Microsoft Entra signing keys"
+            break
+        fi
+        echo "[openclaw] WARNING: Microsoft Entra signing key prefetch attempt ${attempt}/3 failed"
+        if [ "$attempt" -lt 3 ]; then
+            sleep "$attempt"
+        fi
+    done
+    if [ "$BROWSER_AUTH_JWKS_PREFETCH_OK" != "true" ]; then
+        rm -f "$BROWSER_AUTH_JWKS_CACHE_PATH" 2>/dev/null || true
+        unset BROWSER_AUTH_JWKS_PATH
+        echo "[openclaw] WARNING: Failed to prefetch Microsoft Entra signing keys; continuing with live JWKS fetch"
+    fi
+    echo "[openclaw] Browser auth boundary: in-sandbox Entra OIDC reverse proxy"
+    echo "[openclaw] Browser origin allowlist: ${PUBLIC_BASE_ORIGIN}"
+    echo "[openclaw] Browser principal allowlist configured"
+    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.trustedProxies=['127.0.0.1','::1'];c.gateway.auth={mode:'trusted-proxy',trustedProxy:{userHeader:'x-forwarded-user',requiredHeaders:['x-openclaw-authenticated','x-forwarded-proto','x-forwarded-host'],allowLoopback:true}};c.gateway.controlUi={...(c.gateway.controlUi||{}),allowedOrigins:[process.env.PUBLIC_BASE_ORIGIN],dangerouslyAllowHostHeaderOriginFallback:false,dangerouslyDisableDeviceAuth:true};fs.writeFileSync(p,JSON.stringify(c,null,2));"
+else
+    # Gateway token for auth (used by both --token flag and SPA auto-connect).
+    # Persist across container restarts via /mnt/state so the Control UI in the
+    # browser doesn't drift out of sync after every deploy. Precedence:
+    #   1. OPENCLAW_GATEWAY_TOKEN env var (if set)
+    #   2. Existing token on persistent volume
+    #   3. Generate fresh and persist
+    TOKEN_FILE="/mnt/state/gateway-token"
+    if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+        GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN}"
+        echo "[openclaw] Using gateway token from env"
+    elif [ -s "$TOKEN_FILE" ]; then
+        GATEWAY_TOKEN="$(cat "$TOKEN_FILE")"
+        echo "[openclaw] Loaded persisted gateway token"
+    else
+        GATEWAY_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
+        mkdir -p "$(dirname "$TOKEN_FILE")"
+        printf '%s' "$GATEWAY_TOKEN" > "$TOKEN_FILE"
+        echo "[openclaw] Generated and persisted new gateway token"
+    fi
+
+    # Inject token into URL hash BEFORE any SPA scripts load.
+    # The SPA reads #token=<value>, saves it to settings, and auto-connects.
+    if [ -f "$CONTROL_UI" ]; then
+        sed -i "0,/<script>/s//<script>if(!location.hash.includes('token=')){location.hash='token=${GATEWAY_TOKEN}';}<\/script><script>/" "$CONTROL_UI"
+        echo "[openclaw] Injected auto-connect token into control UI HTML"
+    fi
 fi
 
 echo "[openclaw] Config loaded (details redacted from logs)"
@@ -146,10 +270,28 @@ if [ "${AZURE_OPENAI_AUTH}" = "managed-identity" ]; then
     # OPENAI_API_KEY is required by the SDK but ignored by the proxy.
     export OPENAI_API_KEY="injected-by-auth-proxy"
 
-    # Gateway runs on internal :18788 (the gateway-proxy fronts it on :18789).
-    exec openclaw gateway --bind lan --port 18788 --token "$GATEWAY_TOKEN"
+    AGENT_IDS="$(node -e "const fs=require('fs');const cfg=JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json','utf8'));const ids=new Set(['main']);for(const entry of Array.isArray(cfg.agents?.list)?cfg.agents.list:[]){if(entry&&typeof entry.id==='string'&&entry.id.trim()){ids.add(entry.id.trim());}}console.log([...ids].join(' '));")"
+    for AGENT_ID in $AGENT_IDS; do
+        if [ ! -f "/root/.openclaw/agents/$AGENT_ID/agent/auth-profiles.json" ] || \
+           ! grep -q '"openai:manual"' "/root/.openclaw/agents/$AGENT_ID/agent/auth-profiles.json" 2>/dev/null; then
+            echo "[openclaw] Seeding $AGENT_ID OpenAI auth profile for managed-identity runtime"
+            mkdir -p "/root/.openclaw/agents/$AGENT_ID/agent"
+            printf '%s\n' "$OPENAI_API_KEY" | openclaw models auth --agent "$AGENT_ID" paste-api-key --provider openai >/proc/1/fd/1 2>/proc/1/fd/2
+        fi
+    done
+
+    # Gateway runs only on loopback :18788 (the gateway-proxy fronts it on :18789).
+    if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
+        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy
+    else
+        exec openclaw gateway --bind loopback --port 18788 --token "$GATEWAY_TOKEN"
+    fi
 else
     echo "[openclaw] Using api-key"
-    # Gateway runs on internal :18788 (the gateway-proxy fronts it on :18789).
-    exec openclaw gateway --bind lan --port 18788 --token "$GATEWAY_TOKEN"
+    # Gateway runs only on loopback :18788 (the gateway-proxy fronts it on :18789).
+    if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
+        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy
+    else
+        exec openclaw gateway --bind loopback --port 18788 --token "$GATEWAY_TOKEN"
+    fi
 fi

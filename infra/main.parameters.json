@@ -14,6 +14,9 @@
     "botAppSecret": {
       "value": "${BOT_APP_SECRET}"
     },
+    "githubToken": {
+      "value": "${GITHUB_TOKEN=}"
+    },
     "botTenantId": {
       "value": "${BOT_TENANT_ID}"
     },

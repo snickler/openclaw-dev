@@ -26,6 +26,10 @@ param botAppId string = ''
 @secure()
 param botAppSecret string = ''
 
+@description('Optional GitHub token bridge for the standard ACA runtime.')
+@secure()
+param githubToken string = ''
+
 @description('Bot Tenant ID')
 param botTenantId string = ''
 
@@ -91,7 +95,13 @@ var teamsSecrets = teamsEnabled ? [
     value: botAppSecret
   }
 ] : []
-var containerSecrets = teamsSecrets
+var githubSecrets = !empty(githubToken) ? [
+  {
+    name: 'github-token'
+    value: githubToken
+  }
+] : []
+var containerSecrets = concat(teamsSecrets, githubSecrets)
 
 // Build the container env block conditionally for the same reason — when
 // Teams is disabled, none of the MSTEAMS_* placeholders should be injected.
@@ -143,7 +153,21 @@ var teamsEnv = teamsEnabled ? [
     value: botTenantId
   }
 ] : []
-var containerEnv = concat(baseEnv, teamsEnv)
+var githubEnv = !empty(githubToken) ? [
+  {
+    name: 'GITHUB_TOKEN'
+    secretRef: 'github-token'
+  }
+  {
+    name: 'GH_TOKEN'
+    secretRef: 'github-token'
+  }
+  {
+    name: 'GH_PROMPT_DISABLED'
+    value: '1'
+  }
+] : []
+var containerEnv = concat(baseEnv, teamsEnv, githubEnv)
 
 // ---------------------------------------------------------------------------
 // Azure Container Registry — admin disabled (common Azure Policy), pulled via
@@ -423,7 +447,7 @@ resource containerAppAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' =
 }
 
 // ---------------------------------------------------------------------------
-// RBAC — Assign Cognitive Services User to the Container App's managed identity
+// RBAC — Assign Azure OpenAI data-plane roles to the Container App's managed identity
 // ---------------------------------------------------------------------------
 resource openaiResource 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {
   name: last(split(openaiResourceId, '/'))
@@ -437,6 +461,19 @@ resource cognitiveServicesUserRole 'Microsoft.Authorization/roleAssignments@2022
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       'a97b65f3-24c7-4388-baec-2e87135dc908' // Cognitive Services User
+    )
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource cognitiveServicesOpenAiUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!sandboxModeEnabled) {
+  name: guid(subscription().id, containerApp.id, '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+  scope: openaiResource
+  properties: {
+    principalId: containerApp.identity.principalId
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd' // Cognitive Services OpenAI User
     )
     principalType: 'ServicePrincipal'
   }
