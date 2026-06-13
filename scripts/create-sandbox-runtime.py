@@ -242,13 +242,16 @@ def ensure_openai_access(group: str) -> None:
     print("[sandbox runtime] Azure OpenAI role assignments requested. Propagation can take a few minutes.")
 
 
-def confirm_replace(existing: dict, selector: str) -> bool:
+def confirm_replace(existing: dict, selector: str, *, assume_yes: bool) -> bool:
     sandbox_id = existing.get("id", "<unknown>")
     print("[sandbox runtime] An existing sandbox runtime already matches this selector.")
     print(f"[sandbox runtime] Selector: {selector}")
     print(f"[sandbox runtime] Sandbox ID: {sandbox_id}")
     print("[sandbox runtime] Replacing it deletes only that sandbox runtime and its public endpoint.")
     print("[sandbox runtime] Disk images, Azure OpenAI, the resource group, and Entra app registrations stay.")
+    if assume_yes:
+        print("[sandbox runtime] Replacement pre-confirmed by caller.")
+        return True
     if not sys.stdin.isatty():
         print("[sandbox runtime] Refusing to replace an existing sandbox without an interactive confirmation prompt.")
         return False
@@ -334,7 +337,7 @@ def add_anonymous_port(group: str, selector: str, public_port: int) -> None:
     ])
 
 
-def bootstrap_runtime(group: str, selector: str) -> None:
+def bootstrap_runtime(group: str, selector: str, sandbox_id: str = "") -> None:
     print("[sandbox runtime] Bootstrapping OpenClaw inside the sandbox...")
     command = (
         "sh -lc 'if ps -ef | grep -E "
@@ -344,17 +347,12 @@ def bootstrap_runtime(group: str, selector: str) -> None:
         "'\"'\"'[sandbox runtime] OpenClaw runtime is already running'\"'\"'"
         "; else nohup /opt/entrypoint.sh >/proc/1/fd/1 2>/proc/1/fd/2 </dev/null & fi'"
     )
-    exec_args = [
-        "aca",
-        "sandbox",
-        "exec",
-        "--group",
-        group,
-        "-l",
-        selector,
-        "--command",
-        command,
-    ]
+    exec_args = ["aca", "sandbox", "exec"]
+    if sandbox_id:
+        exec_args.extend(["--id", sandbox_id])
+    else:
+        exec_args.extend(["--group", group, "-l", selector])
+    exec_args.extend(["--command", command])
     last_detail = ""
     for attempt in range(1, 7):
         completed = run(exec_args, check=False)
@@ -365,7 +363,10 @@ def bootstrap_runtime(group: str, selector: str) -> None:
         )
         if "GlobalSandboxNotRunning" not in last_detail and "not in Running state" not in last_detail:
             break
-        run(["aca", "sandbox", "resume", "--group", group, "-l", selector], check=False)
+        if sandbox_id:
+            run(["aca", "sandbox", "resume", "--id", sandbox_id], check=False)
+        else:
+            run(["aca", "sandbox", "resume", "--group", group, "-l", selector], check=False)
         print(f"[sandbox runtime] Sandbox is still resuming; retrying bootstrap ({attempt}/6)...")
         time.sleep(5)
     raise RuntimeError(last_detail or "failed to bootstrap sandbox runtime")
@@ -373,6 +374,14 @@ def bootstrap_runtime(group: str, selector: str) -> None:
 
 def get_sandbox(group: str, selector: str) -> dict:
     completed = run(["aca", "sandbox", "get", "--group", group, "-l", selector, "-o", "json"])
+    payload = load_json_output(completed.stdout)
+    if not isinstance(payload, dict):
+        raise RuntimeError("unexpected sandbox payload")
+    return payload
+
+
+def get_sandbox_by_id(sandbox_id: str) -> dict:
+    completed = run(["aca", "sandbox", "get", "--id", sandbox_id, "-o", "json"])
     payload = load_json_output(completed.stdout)
     if not isinstance(payload, dict):
         raise RuntimeError("unexpected sandbox payload")
@@ -458,27 +467,36 @@ def main() -> int:
     parser.add_argument("--selector-label", action="append", required=True, help="Label selector entry (repeatable key=value)")
     parser.add_argument("--disk-name", default="", help="Sandbox disk name")
     parser.add_argument("--disk-id", default="", help="Sandbox disk resource ID")
+    parser.add_argument("--id", default="", help="Existing sandbox ID for bootstrap-only operations")
     parser.add_argument("--credential", action="append", default=[], help="Sandbox credential id to attach")
     parser.add_argument("--entrypoint", default="sh -lc 'tail -f /dev/null'", help="Sandbox keepalive entrypoint used before explicit runtime bootstrap")
     parser.add_argument("--public-port", type=int, default=18789, help="Public port to expose")
     parser.add_argument("--browser-auth-callback-path", default="/oidc/callback", help="Browser auth callback path")
     parser.add_argument("--health-timeout-seconds", type=int, default=180, help="Health probe timeout")
     parser.add_argument("--bootstrap-only", action="store_true", help="Only resume/bootstrap an existing sandbox runtime")
+    parser.add_argument("--yes", action="store_true", help="Replace an existing matching sandbox without an interactive prompt")
     args = parser.parse_args()
 
     selector = parse_selector(args.selector_label)
 
     if args.bootstrap_only:
-        sandbox = get_sandbox(args.group, selector)
+        sandbox = get_sandbox_by_id(args.id) if args.id else get_sandbox(args.group, selector)
         if str(sandbox.get("state") or "").lower() != "running":
             print("[sandbox runtime] Resuming stopped sandbox runtime...")
-            run(["aca", "sandbox", "resume", "--group", args.group, "-l", selector])
-        bootstrap_runtime(args.group, selector)
-        sandbox = get_sandbox(args.group, selector)
-        sandbox_id = str(sandbox.get("id") or "").strip()
+            if args.id:
+                run(["aca", "sandbox", "resume", "--id", args.id])
+            else:
+                run(["aca", "sandbox", "resume", "--group", args.group, "-l", selector])
+        sandbox_id = args.id or str(sandbox.get("id") or "").strip()
         public_base_url = azd_get_value("PUBLIC_BASE_URL").strip()
         if not public_base_url and sandbox_id:
             public_base_url, _ = get_public_base_url(args.group, selector, args.region, args.public_port, sandbox_id)
+        try:
+            bootstrap_runtime(args.group, selector, sandbox_id=args.id)
+        except RuntimeError as exc:
+            if not public_base_url:
+                raise
+            print(f"[sandbox runtime] Bootstrap exec failed; checking existing health before failing: {exc}")
         if public_base_url:
             wait_for_health(public_base_url.rstrip("/"), args.health_timeout_seconds)
         return 0
@@ -500,7 +518,7 @@ def main() -> int:
 
     existing = get_existing_sandbox(args.group, selector)
     if existing:
-        if not confirm_replace(existing, selector):
+        if not confirm_replace(existing, selector, assume_yes=args.yes):
             return 1
         delete_existing_sandbox(args.group, selector)
 

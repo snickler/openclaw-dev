@@ -98,7 +98,8 @@ gh auth status
             },
           ]`,
         /"install"\s*:\s*\[\s*\{\s*"id"\s*:\s*"brew"[\s\S]*?"os"\s*:\s*\["darwin"\][\s\S]*?"label"\s*:\s*"Install GitHub CLI \(brew\)",\s*\}\s*\]/m,
-        "limit gh-issues install guidance to darwin brew only"
+        "limit gh-issues install guidance to darwin brew only",
+        true
       );
 
       next = replaceIfNeeded(
@@ -149,13 +150,16 @@ function replaceIfNeeded(content, regex, replacement, successCheck, description)
   throw new Error(`Could not apply patch: ${description}`);
 }
 
-function replaceOneOf(content, regexes, replacement, successCheck, description) {
+function replaceOneOf(content, regexes, replacement, successCheck, description, optional = false) {
   for (const regex of regexes) {
     if (regex.test(content)) {
       return content.replace(regex, replacement);
     }
   }
   if (typeof successCheck === "string" ? content.includes(successCheck) : successCheck.test(content)) {
+    return content;
+  }
+  if (optional) {
     return content;
   }
   throw new Error(`Could not apply patch: ${description}`);

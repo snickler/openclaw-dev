@@ -255,7 +255,16 @@ sandbox)
         SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
         SANDBOX_DISK_NAME="${SANDBOX_DISK_NAME:-$(azd env get-value SANDBOX_DISK_NAME 2>/dev/null || echo "")}"
         SANDBOX_SUBSCRIPTION="${SANDBOX_SUBSCRIPTION:-$(azd env get-value AZURE_SUBSCRIPTION_ID 2>/dev/null || echo "")}"
-        SANDBOX_IMAGE="${7:-${SANDBOX_SOURCE_IMAGE:-$(azd env get-value SANDBOX_SOURCE_IMAGE 2>/dev/null || azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2>/dev/null || echo "")}}"
+        SANDBOX_IMAGE="${7:-}"
+        if [ -z "$SANDBOX_IMAGE" ] && [ "$2" = "upload" ]; then
+            SANDBOX_IMAGE="${SANDBOX_SOURCE_IMAGE:-}"
+            if [ -z "$SANDBOX_IMAGE" ]; then
+                SANDBOX_IMAGE="$(azd env get-value SANDBOX_SOURCE_IMAGE 2>/dev/null || true)"
+            fi
+            if [ -z "$SANDBOX_IMAGE" ]; then
+                SANDBOX_IMAGE="$(azd env get-value SERVICE_OPENCLAW_IMAGE_NAME 2>/dev/null || true)"
+            fi
+        fi
         if [ -z "${7:-}" ] && [ -n "$SANDBOX_EMAIL" ] && [[ "$SANDBOX_EMAIL" == *"/"* || "$SANDBOX_EMAIL" == *":"* ]]; then
             SANDBOX_IMAGE="$SANDBOX_EMAIL"
             SANDBOX_EMAIL=""
@@ -285,17 +294,17 @@ sandbox)
         aca sandboxgroup identity assign --group "$SANDBOX_GROUP" --system-assigned
 
         if [ -z "$SANDBOX_IMAGE" ]; then
-            ACR_LOGIN_SERVER="$(azd env get-value AZURE_CONTAINER_REGISTRY_ENDPOINT 2>/dev/null || echo "")"
-            if [ -z "$ACR_LOGIN_SERVER" ]; then
-                ACR_LOGIN_SERVER="$(az acr list -g "$SANDBOX_RG" --query "[0].loginServer" -o tsv 2>/dev/null || echo "")"
+            ACR_NAME="${AZURE_CONTAINER_REGISTRY_NAME:-}"
+            if [ -z "$ACR_NAME" ]; then
+                ACR_NAME="$(az acr list -g "$SANDBOX_RG" --query "[0].name" -o tsv 2>/dev/null || true)"
             fi
-            if [ -z "$ACR_LOGIN_SERVER" ]; then
-                echo -e "  ${R}Unable to resolve Azure Container Registry endpoint for sandbox image build.${N}"
-                echo -e "  ${D}Set SANDBOX_SOURCE_IMAGE to a CI-built image, or run devclaw up/deploy first.${N}"
+            if [ -z "$ACR_NAME" ]; then
+                echo -e "  ${R}Unable to resolve Azure Container Registry for sandbox image build.${N}"
+                echo -e "  ${D}Set AZURE_CONTAINER_REGISTRY_NAME, pass an explicit image, or run devclaw up/deploy first.${N}"
                 exit 1
             fi
+            ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
             SANDBOX_IMAGE="${ACR_LOGIN_SERVER}/openclaw-azure/openclaw-sandbox-core:sandbox-${SHORT_SHA}"
-            ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
             if ! command -v node >/dev/null 2>&1; then
                 echo -e "  ${R}Node.js is required to generate the hosted Squad runtime bundle.${N}"
                 exit 1
@@ -365,7 +374,7 @@ sandbox)
             echo -e "  ${D}Run 'devclaw up' in sandbox mode first so the preprovision hook can create the Entra OIDC app registration.${N}"
             exit 1
         fi
-        SANDBOX_RUNTIME_ARGS=(python "$ROOT/scripts/create-sandbox-runtime.py" --group "$SANDBOX_GROUP" --region "$SANDBOX_REGION" --selector-label "app=openclaw" --selector-label "env=$SANDBOX_SQUAD" --public-port 18789)
+        SANDBOX_RUNTIME_ARGS=(python "$ROOT/scripts/create-sandbox-runtime.py" --group "$SANDBOX_GROUP" --region "$SANDBOX_REGION" --selector-label "app=openclaw" --selector-label "env=$SANDBOX_SQUAD" --public-port 18789 --yes)
         if [ -n "$SANDBOX_DISK_ID" ]; then
             SANDBOX_RUNTIME_ARGS+=(--disk-id "$SANDBOX_DISK_ID")
         else
@@ -510,13 +519,20 @@ start)
         SANDBOX_SQUAD="$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)"
         SANDBOX_REGION="$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)"
         SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
+        PUBLIC_BASE_URL="$(azd env get-value PUBLIC_BASE_URL 2>/dev/null || true)"
+        SANDBOX_ID_ARG=()
+        if [ -n "$PUBLIC_BASE_URL" ]; then
+            SANDBOX_ID="$(printf '%s' "$PUBLIC_BASE_URL" | sed -E 's#^https?://(.{36}).*#\1#')"
+            [ -n "$SANDBOX_ID" ] && SANDBOX_ID_ARG=(--id "$SANDBOX_ID")
+        fi
         python "$ROOT/scripts/create-sandbox-runtime.py" \
             --group "$SANDBOX_GROUP" \
             --region "$SANDBOX_REGION" \
             --selector-label "app=openclaw" \
             --selector-label "env=$SANDBOX_SQUAD" \
             --public-port 18789 \
-            --bootstrap-only
+            --bootstrap-only \
+            "${SANDBOX_ID_ARG[@]}"
         echo -e "  ${G}Sandbox OpenClaw runtime resumed and bootstrapped.${N}"
     else
         get_app
