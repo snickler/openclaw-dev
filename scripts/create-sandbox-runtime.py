@@ -281,7 +281,7 @@ def create_sandbox(
         "--group",
         group,
         "--entrypoint",
-        entrypoint,
+        "sh -lc 'tail -f /dev/null'",
         "--env",
         f"OPENAI_BASE_URL={openai_base_url}",
         "--env",
@@ -336,7 +336,15 @@ def add_anonymous_port(group: str, selector: str, public_port: int) -> None:
 
 def bootstrap_runtime(group: str, selector: str) -> None:
     print("[sandbox runtime] Bootstrapping OpenClaw inside the sandbox...")
-    run([
+    command = (
+        "sh -lc 'if ps -ef | grep -E "
+        "'\"'\"'[g]ateway-proxy\\.mjs|[o]penclaw gateway'\"'\"'"
+        " >/dev/null 2>&1; then "
+        "echo "
+        "'\"'\"'[sandbox runtime] OpenClaw runtime is already running'\"'\"'"
+        "; else nohup /opt/entrypoint.sh >/proc/1/fd/1 2>/proc/1/fd/2 </dev/null & fi'"
+    )
+    exec_args = [
         "aca",
         "sandbox",
         "exec",
@@ -345,8 +353,21 @@ def bootstrap_runtime(group: str, selector: str) -> None:
         "-l",
         selector,
         "--command",
-        "sh -lc 'nohup /opt/entrypoint.sh >/proc/1/fd/1 2>/proc/1/fd/2 </dev/null &'",
-    ])
+        command,
+    ]
+    last_detail = ""
+    for attempt in range(1, 7):
+        completed = run(exec_args, check=False)
+        if completed.returncode == 0:
+            return
+        last_detail = "\n".join(
+            part for part in ((completed.stdout or "").strip(), (completed.stderr or "").strip()) if part
+        )
+        if "GlobalSandboxNotRunning" not in last_detail and "not in Running state" not in last_detail:
+            break
+        print(f"[sandbox runtime] Sandbox is still resuming; retrying bootstrap ({attempt}/6)...")
+        time.sleep(5)
+    raise RuntimeError(last_detail or "failed to bootstrap sandbox runtime")
 
 
 def get_sandbox(group: str, selector: str) -> dict:
@@ -437,16 +458,33 @@ def main() -> int:
     parser.add_argument("--disk-name", default="", help="Sandbox disk name")
     parser.add_argument("--disk-id", default="", help="Sandbox disk resource ID")
     parser.add_argument("--credential", action="append", default=[], help="Sandbox credential id to attach")
-    parser.add_argument("--entrypoint", default="/opt/entrypoint.sh", help="Runtime entrypoint")
+    parser.add_argument("--entrypoint", default="sh -lc 'tail -f /dev/null'", help="Sandbox keepalive entrypoint used before explicit runtime bootstrap")
     parser.add_argument("--public-port", type=int, default=18789, help="Public port to expose")
     parser.add_argument("--browser-auth-callback-path", default="/oidc/callback", help="Browser auth callback path")
     parser.add_argument("--health-timeout-seconds", type=int, default=180, help="Health probe timeout")
+    parser.add_argument("--bootstrap-only", action="store_true", help="Only resume/bootstrap an existing sandbox runtime")
     args = parser.parse_args()
+
+    selector = parse_selector(args.selector_label)
+
+    if args.bootstrap_only:
+        sandbox = get_sandbox(args.group, selector)
+        if str(sandbox.get("state") or "").lower() != "running":
+            print("[sandbox runtime] Resuming stopped sandbox runtime...")
+            run(["aca", "sandbox", "resume", "--group", args.group, "-l", selector])
+        bootstrap_runtime(args.group, selector)
+        sandbox = get_sandbox(args.group, selector)
+        sandbox_id = str(sandbox.get("id") or "").strip()
+        public_base_url = azd_get_value("PUBLIC_BASE_URL").strip()
+        if not public_base_url and sandbox_id:
+            public_base_url, _ = get_public_base_url(args.group, selector, args.region, args.public_port, sandbox_id)
+        if public_base_url:
+            wait_for_health(public_base_url.rstrip("/"), args.health_timeout_seconds)
+        return 0
 
     if not args.disk_id and not args.disk_name:
         raise RuntimeError("Either --disk-id or --disk-name is required")
 
-    selector = parse_selector(args.selector_label)
     openai_base_url = get_openai_base_url()
     browser_auth = get_browser_auth_settings()
     github_cli_env = get_github_cli_env()

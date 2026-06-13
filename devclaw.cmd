@@ -122,6 +122,21 @@ echo.
 exit /b 0
 
 :start
+set "HOST_MODE="
+for /f "tokens=*" %%a in ('call azd env get-value ACA_SANDBOX_MODE 2^>nul') do set "HOST_MODE=%%a"
+if /i "%HOST_MODE%"=="sandbox" (
+    set "SANDBOX_SQUAD="
+    set "SANDBOX_REGION="
+    for /f "tokens=*" %%a in ('call azd env get-value SQUAD_NAME 2^>nul') do set "SANDBOX_SQUAD=%%a"
+    if "%SANDBOX_SQUAD%"=="" set "SANDBOX_SQUAD=core"
+    for /f "tokens=*" %%a in ('call azd env get-value AZURE_LOCATION 2^>nul') do set "SANDBOX_REGION=%%a"
+    if "%SANDBOX_REGION%"=="" set "SANDBOX_REGION=eastus2"
+    call python "%~dp0scripts\create-sandbox-runtime.py" --group "sg-%SANDBOX_SQUAD%" --region "%SANDBOX_REGION%" --selector-label "app=openclaw" --selector-label "env=%SANDBOX_SQUAD%" --public-port 18789 --bootstrap-only
+    if not "!ERRORLEVEL!"=="0" exit /b !ERRORLEVEL!
+    echo   Sandbox OpenClaw runtime resumed and bootstrapped.
+    echo.
+    exit /b 0
+)
 for /f "tokens=*" %%a in ('azd env get-value AZURE_RESOURCE_GROUP 2^>nul') do set "RG=%%a"
 for /f "tokens=*" %%a in ('az containerapp list --resource-group %RG% --query "[0].name" -o tsv 2^>nul') do set "APP=%%a"
 echo.

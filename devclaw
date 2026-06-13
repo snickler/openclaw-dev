@@ -499,13 +499,32 @@ up)
     ;;
 
 start)
-    get_app
     echo ""
     echo -e "  ${C}Starting OpenClaw...${N}"
-    az containerapp update --name "$APP" --resource-group "$RG" \
-        --min-replicas 1 --max-replicas 1 --only-show-errors >/dev/null
-    echo -e "  ${G}OpenClaw started. State restored from Azure Files.${N}"
-    echo -e "  ${D}Run 'devclaw logs' to see output.${N}"
+    HOST_MODE="$(azd env get-value ACA_SANDBOX_MODE 2>/dev/null | tr -d '[:space:]' || echo "")"
+    if [ "${HOST_MODE,,}" = "sandbox" ]; then
+        if ! command -v aca >/dev/null 2>&1; then
+            echo -e "  ${R}ACA CLI (aca) not found.${N}"
+            exit 1
+        fi
+        SANDBOX_SQUAD="$(azd env get-value SQUAD_NAME 2>/dev/null || echo core)"
+        SANDBOX_REGION="$(azd env get-value AZURE_LOCATION 2>/dev/null || echo eastus2)"
+        SANDBOX_GROUP="sg-${SANDBOX_SQUAD}"
+        python "$ROOT/scripts/create-sandbox-runtime.py" \
+            --group "$SANDBOX_GROUP" \
+            --region "$SANDBOX_REGION" \
+            --selector-label "app=openclaw" \
+            --selector-label "env=$SANDBOX_SQUAD" \
+            --public-port 18789 \
+            --bootstrap-only
+        echo -e "  ${G}Sandbox OpenClaw runtime resumed and bootstrapped.${N}"
+    else
+        get_app
+        az containerapp update --name "$APP" --resource-group "$RG" \
+            --min-replicas 1 --max-replicas 1 --only-show-errors >/dev/null
+        echo -e "  ${G}OpenClaw started. State restored from Azure Files.${N}"
+        echo -e "  ${D}Run 'devclaw logs' to see output.${N}"
+    fi
     echo ""
     ;;
 
