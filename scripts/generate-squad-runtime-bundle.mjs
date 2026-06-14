@@ -264,7 +264,7 @@ function parseCoordinatorContract(text) {
     outputs: identity["Outputs owned"] || "",
     mindset: identity.Mindset || "",
     guardrails: refusalRules,
-    hostedRuntimeNote: "In this hosted OpenClaw runtime, Squad can use real OpenClaw coordination tools such as `agent_to_agent`, `sessions_spawn`, and preloaded MCP bridges when they are actually exposed, but it must not claim Copilot CLI-only orchestration, repo worktrees, `session_store` access, or mutable Squad-state writes when those hosted equivalents are absent.",
+    hostedRuntimeNote: "In this hosted OpenClaw runtime, Squad can use real OpenClaw coordination tools such as `agent_to_agent`, `sessions_spawn`, and preloaded MCP bridges when they are actually exposed. If `agent_to_agent` is absent, answer-required specialist work must route through the Agents view or a direct `openclaw agent --agent <id>` flow; `sessions_spawn` is background-only. Squad must not claim Copilot CLI-only orchestration, repo worktrees, `session_store` access, or mutable Squad-state writes when those hosted equivalents are absent.",
   };
 }
 
@@ -787,7 +787,7 @@ function main() {
       capabilities: [
         "Expose read-only copies of the repo's real Squad contract, routing, ceremonies, charters, and selected template references inside each OpenClaw workspace.",
         "Project repo skills plus Squad template skills into OpenClaw workspace skills so hosted agents can use the same playbooks as Copilot/CLI sessions.",
-        "Use OpenClaw-native `agent_to_agent` and `sessions_spawn` / `subagents` flows for real hosted specialist delegation and background work when those tools are exposed.",
+        "Use OpenClaw-native `agent_to_agent` for answer-required hosted specialist delegation when it is exposed; otherwise use the Agents view or direct `openclaw agent --agent <id>` flow. Use `sessions_spawn` / `subagents` flows only for fire-and-forget background work when those tools are exposed.",
         "Keep OpenClaw's bundled GitHub skills (`github`, `gh-issues`) available to hosted agents by ensuring `gh` is built into the image and on PATH.",
         "Expose a runtime-configured GitHub MCP wrapper through `bundle-mcp`; with a token bridge it can launch the configured, reviewed GitHub MCP server package, and without one it reports status honestly.",
         "Use hosted-safe wrappers for Copilot CLI / VS Code assumptions and map them onto OpenClaw session tools, the Agents view, gh, and az when appropriate.",
@@ -809,7 +809,7 @@ function main() {
           "Use `runSubagent` with session-model-only behavior and no SQL tool.",
         ],
         hostedOpenClaw: [
-          "Prefer `agent_to_agent` for specialist consultation/delegation and `sessions_spawn` / `subagents` / `sessions_history` for background work when those tools are exposed.",
+          "Prefer `agent_to_agent` for specialist consultation/delegation when the parent needs the answer and the tool is exposed. If it is absent, use the Agents view or direct `openclaw agent --agent <id>` flow for answer-required specialist work. Use `sessions_spawn` / `subagents` only for fire-and-forget background work, and `sessions_history` for transcript recall.",
           "If native coordination tools are absent, fall back to explicit handoff guidance via the Agents view instead of pretending a background spawn happened.",
           "Treat generated workspace wrapper docs and generated hosted skills as the authoritative contract for the browser runtime.",
         ],

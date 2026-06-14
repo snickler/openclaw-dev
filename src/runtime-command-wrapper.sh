@@ -10,7 +10,7 @@ say() {
 case "$cmd" in
   task|runSubagent)
     say "[hosted-openclaw] '$cmd' is a GitHub Copilot / VS Code orchestration primitive, not a shell command in hosted OpenClaw."
-    say "[hosted-openclaw] Hosted equivalent: use 'agent_to_agent' for specialist delegation, or 'sessions_spawn' + 'subagents' + 'sessions_yield' for background work when those tools are exposed."
+    say "[hosted-openclaw] Hosted equivalent: use 'agent_to_agent' for answer-required specialist delegation only when that tool is exposed. If it is absent, use the Agents view or direct 'openclaw agent --agent <id>' flow. Use 'sessions_spawn' + 'subagents' + 'sessions_yield' only for background work when those tools are exposed."
     say "[hosted-openclaw] If native coordination tools are unavailable, tell the operator which specialist to open in the Agents view instead of pretending the spawn happened."
     exit 64
     ;;

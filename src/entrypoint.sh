@@ -162,7 +162,13 @@ if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
     echo "[openclaw] Browser auth boundary: in-sandbox Entra OIDC reverse proxy"
     echo "[openclaw] Browser origin allowlist: ${PUBLIC_BASE_ORIGIN}"
     echo "[openclaw] Browser principal allowlist configured"
-    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.trustedProxies=['127.0.0.1','::1'];c.gateway.auth={mode:'trusted-proxy',trustedProxy:{userHeader:'x-forwarded-user',requiredHeaders:[],allowLoopback:true}};c.gateway.controlUi={...(c.gateway.controlUi||{}),allowedOrigins:[process.env.PUBLIC_BASE_ORIGIN],dangerouslyAllowHostHeaderOriginFallback:false,dangerouslyDisableDeviceAuth:true};fs.writeFileSync(p,JSON.stringify(c,null,2));"
+    export OPENCLAW_GATEWAY_PORT=18788
+    if [ -z "${OPENCLAW_GATEWAY_PASSWORD:-}" ]; then
+        OPENCLAW_GATEWAY_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
+        export OPENCLAW_GATEWAY_PASSWORD
+        echo "[openclaw] Generated internal loopback gateway password for hosted subagent/tool RPC"
+    fi
+    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.port=Number(process.env.OPENCLAW_GATEWAY_PORT)||18788;c.gateway.trustedProxies=['127.0.0.1','::1'];c.gateway.auth={mode:'trusted-proxy',password:process.env.OPENCLAW_GATEWAY_PASSWORD,trustedProxy:{userHeader:'x-forwarded-user',requiredHeaders:[],allowLoopback:true}};c.gateway.controlUi={...(c.gateway.controlUi||{}),allowedOrigins:[process.env.PUBLIC_BASE_ORIGIN],dangerouslyAllowHostHeaderOriginFallback:false,dangerouslyDisableDeviceAuth:true};fs.writeFileSync(p,JSON.stringify(c,null,2));"
 else
     # Gateway token for auth (used by both --token flag and SPA auto-connect).
     # Persist across container restarts via /mnt/state so the Control UI in the
@@ -190,6 +196,9 @@ else
         sed -i "0,/<script>/s//<script>if(!location.hash.includes('token=')){location.hash='token=${GATEWAY_TOKEN}';}<\/script><script>/" "$CONTROL_UI"
         echo "[openclaw] Injected auto-connect token into control UI HTML"
     fi
+    export OPENCLAW_GATEWAY_PORT=18788
+    export OPENCLAW_GATEWAY_TOKEN="$GATEWAY_TOKEN"
+    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.port=Number(process.env.OPENCLAW_GATEWAY_PORT)||18788;fs.writeFileSync(p,JSON.stringify(c,null,2));"
 fi
 
 echo "[openclaw] Config loaded (details redacted from logs)"
@@ -282,7 +291,7 @@ if [ "${AZURE_OPENAI_AUTH}" = "managed-identity" ]; then
 
     # Gateway runs only on loopback :18788 (the gateway-proxy fronts it on :18789).
     if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
-        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy
+        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy --password "$OPENCLAW_GATEWAY_PASSWORD"
     else
         exec openclaw gateway --bind loopback --port 18788 --token "$GATEWAY_TOKEN"
     fi
@@ -290,7 +299,7 @@ else
     echo "[openclaw] Using api-key"
     # Gateway runs only on loopback :18788 (the gateway-proxy fronts it on :18789).
     if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
-        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy
+        exec openclaw gateway --bind loopback --port 18788 --auth trusted-proxy --password "$OPENCLAW_GATEWAY_PASSWORD"
     else
         exec openclaw gateway --bind loopback --port 18788 --token "$GATEWAY_TOKEN"
     fi
