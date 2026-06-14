@@ -162,7 +162,7 @@ if [ "$BROWSER_AUTH_ENABLED" = "true" ]; then
     echo "[openclaw] Browser auth boundary: in-sandbox Entra OIDC reverse proxy"
     echo "[openclaw] Browser origin allowlist: ${PUBLIC_BASE_ORIGIN}"
     echo "[openclaw] Browser principal allowlist configured"
-    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.trustedProxies=['127.0.0.1','::1'];c.gateway.auth={mode:'trusted-proxy',trustedProxy:{userHeader:'x-forwarded-user',requiredHeaders:['x-openclaw-authenticated','x-forwarded-proto','x-forwarded-host'],allowLoopback:true}};c.gateway.controlUi={...(c.gateway.controlUi||{}),allowedOrigins:[process.env.PUBLIC_BASE_ORIGIN],dangerouslyAllowHostHeaderOriginFallback:false,dangerouslyDisableDeviceAuth:true};fs.writeFileSync(p,JSON.stringify(c,null,2));"
+    node -e "const fs=require('fs');const p='/root/.openclaw/openclaw.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.gateway=c.gateway||{};c.gateway.trustedProxies=['127.0.0.1','::1'];c.gateway.auth={mode:'trusted-proxy',trustedProxy:{userHeader:'x-forwarded-user',requiredHeaders:[],allowLoopback:true}};c.gateway.controlUi={...(c.gateway.controlUi||{}),allowedOrigins:[process.env.PUBLIC_BASE_ORIGIN],dangerouslyAllowHostHeaderOriginFallback:false,dangerouslyDisableDeviceAuth:true};fs.writeFileSync(p,JSON.stringify(c,null,2));"
 else
     # Gateway token for auth (used by both --token flag and SPA auto-connect).
     # Persist across container restarts via /mnt/state so the Control UI in the
